@@ -2,7 +2,7 @@
 
 [![Python Version](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![PyPI Version](https://img.shields.io/pypi/v/sjson.svg)](https://pypi.org/project/sjson/)
-[![License](https://img.shields.io/pypi/l/sjson.svg)](https://pypi.org/project/sjson/)
+[![License: LGPL-2.1](https://img.shields.io/badge/License-LGPL--2.1-blue.svg)](https://opensource.org/licenses/LGPL-2.1)
 
 This library is meant to compress JSON into a binary representation that is likely as compressed as possible without prior knowledge of the library. 
 
