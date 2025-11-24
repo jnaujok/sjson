@@ -7,7 +7,7 @@ authors = [
 ]
 readme = "README.md"
 license = "LGPL-2.1"
-requires-python = ">=3.09"
+requires-python = ">=3.10"
 dependencies = [
     "bitstring (>=4.3.0,<5.0.0)",
     "lz4 (>=4.4.0,<5.0.0)"
