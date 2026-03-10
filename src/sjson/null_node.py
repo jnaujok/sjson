@@ -70,7 +70,7 @@ class NullNode(Node):
                            additional data).
         """
         if bits[0:3].bin == Node.NODE_NULL:
-            bits = bits[3:]
+            del bits[:3]
             return None
         raise ValueError("Invalid null node found - bit pattern mismatch.")
 

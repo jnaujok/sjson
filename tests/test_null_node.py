@@ -36,6 +36,6 @@ class TestNullNode:
     def test_round_trip(self) -> None:
         node: NullNode = NullNode()
         ba: BitArray = node.to_binary()
+        assert ba.bin == "000", f"Expected '000', got {ba.bin}"
         value = Node.from_bits(ba)
         assert value.get_value() is None, f"Expected None, got {value}"
-        assert ba.bin == "000", f"Expected '000', got {ba.bin}"

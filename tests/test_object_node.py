@@ -24,8 +24,9 @@ from sjson.tag_dictionary import TagDictionary
 
 class TestObjectNode:
     def test_empty_object(self) -> None:
+        tag_dictionary: TagDictionary = TagDictionary()
         node: ObjectNode = ObjectNode({})
-        ba: BitArray = node.to_binary()
+        ba: BitArray = node.to_binary(tag_dictionary=tag_dictionary)
         assert isinstance(ba, BitArray)
         assert ba.bin == Node.NODE_OBJECT + Node.END_OF_OBJECT
 

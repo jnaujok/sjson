@@ -174,15 +174,15 @@ class StringNode(Node):
         # Check for proper type code
         if bits[0:3].bin != self.get_binary_code():
             raise Exception("Invalid string type code")
-        bits = bits[3:]
+        del bits[:3]
         # Check for UUID
         uuid_flag = bits[0:1].bin
         if uuid_flag == "1":
             hyphens = bits[1:2].bin
             hex = bits[2:3].bin
-            bits = bits[3:]
+            del bits[:3]
             data = bits[: (16 * 8)]
-            bits = bits[(16 * 8) :]  # noqa E501
+            del bits[: (16 * 8)]  # noqa E501
             self.hyphens = hyphens == "1"
             self.upper_case_hex = hex == "1"
             self.uuid = uuid.UUID(bytes=data.tobytes())
@@ -206,12 +206,12 @@ class StringNode(Node):
                 self.value = self.value.lower()
             return self.value
         # Not a UUID
-        bits = bits[1:]
+        del bits[:1]
         compressed = bits[0:1].bin
         length = int(bits[1:17].bin, 2)
-        bits = bits[17:]
+        del bits[:17]
         data = bits[: length * 8]
-        bits = bits[length * 8 :]  # noqa E501
+        del bits[: length * 8]  # noqa E501
         self.is_uuid = False
         self.hyphens = False
         self.uuid = None

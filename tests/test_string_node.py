@@ -48,7 +48,9 @@ class TestStringNode:
 
     def test_regular_string(self) -> None:
         test_str: str = (
-            "This This This This This This This This This This This This This This This This This This This This This This This This This This This This This This"
+            "This This This This This This This This This This This This This This This"
+            " This This This This This This This This This This This This This This"
+            " This This This This This This This This This This This This This This"
         )
         node: StringNode = StringNode(test_str)
         ba: BitArray = node.to_binary()

@@ -31,7 +31,7 @@ class NumberNode(Node):
     """
 
     def __init__(
-        self, value: float | None = None, bits: BitArray | None = None
+        self, value: float | int | None = None, bits: BitArray | None = None
     ) -> None:
         """Initialize a NumberNode with a float value.
 
@@ -39,7 +39,7 @@ class NumberNode(Node):
             value: The numeric value to store.
         """
         if value is not None:
-            self.value: float = value
+            self.value: float | int = value
         elif bits is not None:
             self.value = self.to_value(bits)
         else:
@@ -47,6 +47,9 @@ class NumberNode(Node):
 
     def to_binary(self, tag_dictionary: TagDictionary | None = None) -> BitArray:
         """Convert the number to a bitstream representation using BCD encoding.
+
+        A leading bit with the int/float indicator (0 = int, 1 = float) is added
+        before the rest of the number is encoded.
 
         The number is converted to a string, then each character is encoded as a
         4-bit nybble:
@@ -65,19 +68,38 @@ class NumberNode(Node):
         Raises:
             ValueError: If the number contains invalid characters for BCD encoding.
         """
+        if isinstance(self.value, int):
+            int_float_flag = BitArray(bin="0")
+        elif isinstance(self.value, float):
+            int_float_flag = BitArray(bin="1")
+        else:
+            raise ValueError(f"Invalid number type: {type(self.value)}")
+
         # Handle the special cases of "Not a Number" and "Infinity"
         if math.isnan(self.value):
-            return BitArray(bin=self.get_binary_code()) + BitArray(uint=15, length=4)
+            return (
+                BitArray(bin=self.get_binary_code())
+                + int_float_flag
+                + BitArray(uint=1, length=8)
+                + BitArray(uint=15, length=4)
+            )
         elif self.value == math.inf:
-            return BitArray(bin=self.get_binary_code()) + BitArray(uint=14, length=4)
+            return (
+                BitArray(bin=self.get_binary_code())
+                + int_float_flag
+                + BitArray(uint=1, length=8)
+                + BitArray(uint=14, length=4)
+            )
         elif self.value == -math.inf:
             return (
                 BitArray(bin=self.get_binary_code())
+                + int_float_flag
+                + BitArray(uint=2, length=8)
                 + BitArray(uint=13, length=4)
                 + BitArray(uint=14, length=4)
             )
 
-        # Convert float to string
+        # Convert number to string
         str_val: str = f"{self.value}"
         # Convert each char to BCD nybble
         nybbles: list[int] = []
@@ -99,8 +121,10 @@ class NumberNode(Node):
                 raise ValueError(f"Invalid character in number: {char}")
         length: int = len(nybbles)
         # Build out the bits
-        bits: BitArray = BitArray(bin=self.get_binary_code()) + BitArray(
-            uint=length, length=8
+        bits: BitArray = (
+            BitArray(bin=self.get_binary_code())
+            + int_float_flag
+            + BitArray(uint=length, length=8)
         )
         for nybble in nybbles:
             bits += BitArray(uint=nybble, length=4)
@@ -134,15 +158,18 @@ class NumberNode(Node):
         Returns:
             float: The float value of the number.
         """
-        # Check for the minimum number of bits. (3 + 8 + 4)
-        if len(bits) < 15:
+        # Check for the minimum number of bits. (3 + 1 + 8 + 4)
+        if len(bits) < 16:
             raise ValueError(f"Too few bits to be a number node: {len(bits)}")
         if bits[0:3].bin != self.get_binary_code():
             raise ValueError(f"Invalid number node type: {bits[0:3].bin}")
-        bits = bits[3:]
+        del bits[:3]
+        # Get the int/float indicator
+        int_float_flag = int(bits[0:1].bin, 2)
+        del bits[:1]
         # Get the length of the number
         length: int = int(bits[0:8].bin, 2)
-        bits = bits[8:]
+        del bits[:8]
         # Get the number
         value: str = ""
         for i in range(length):
@@ -163,9 +190,12 @@ class NumberNode(Node):
                         value += "inf"
                     case 15:
                         value += "nan"
-            bits = bits[4:]
+            del bits[:4]
         # Convert the number
-        self.value = float(value)
+        if int_float_flag == 0:
+            self.value = int(value)
+        else:
+            self.value = float(value)
         return self.value
 
     def get_value(self) -> Any:

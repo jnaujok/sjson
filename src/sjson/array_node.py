@@ -100,7 +100,7 @@ class ArrayNode(Node):
             # Get the number of items. The length is a 16 bit number
             length = int(bits.bin[3 : 3 + 16], 2)  # noqa: E203
             # Skip the type and length
-            bits = bits[3 + 16 :]  # noqa: E203
+            del bits[: 3 + 16]  # noqa: E203
             # Get the items.
             for _ in range(length):
                 items.append(Node.from_bits(bits, tag_dictionary).get_value())

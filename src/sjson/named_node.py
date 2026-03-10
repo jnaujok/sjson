@@ -56,21 +56,30 @@ class NamedNode(Node):
         """
         if tag_dictionary is None:
             raise ValueError("Missing tag dictionary")
-        if len(bits) < 20:
+        if len(bits) < 11:
             raise ValueError("Not enough bits for name and node")
-        if bits[0:1] == "0":
-            tag_id = int(bits.bin[0:8], 2)
-            bits = bits[8:]
+        if bits[0:1].bin == "0":
+            tag_id = int(bits[0:8].bin, 2)
+            del bits[0:8]  # Remove the tag ID
         else:
-            high_byte = int(bits.bin[0:8], 2)
-            low_byte = int(bits.bin[8:16], 2)
+            high_byte = int(bits[0:8].bin, 2)
+            low_byte = int(bits[8:16].bin, 2)
             tag_id = ((high_byte % 128) * 255) + low_byte
-            bits = bits[16:]
+            del bits[0:16]  # Remove the high and low bytes of the tag ID
         if tag_id == 0:
             raise ValueError("Named tag called with a nameless tag.")
         self.name = tag_dictionary.lookup(tag_id)
-        self.node = Node.from_bits(bits)
+        self.node = Node.from_bits(bits, tag_dictionary=tag_dictionary)
         return (self.name, self.node)
+
+    def get_name(self) -> str:
+        """
+        Return the name of the node.
+
+        Returns:
+            str: The name of the node.
+        """
+        return self.name
 
     def get_type(self) -> str:
         """
@@ -122,7 +131,7 @@ class NamedNode(Node):
                 bit_array.append(BitArray(uint=high_byte, length=8))
                 bit_array.append(BitArray(uint=low_byte, length=8))
 
-            bit_array.extend(self.node.to_binary())
+            bit_array.append(self.node.to_binary(tag_dictionary=tag_dictionary))
         else:
             if self.node is None:
                 raise ValueError(f"The node for {self.name} is undefined.")

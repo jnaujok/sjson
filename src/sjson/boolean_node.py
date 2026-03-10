@@ -84,7 +84,7 @@ class BooleanNode(Node):
         if bits.bin[0:3] != Node.NODE_BOOLEAN:
             raise ValueError("Not a boolean value")
         self.value = bool(int(bits.bin[3:4], 2))
-        bits = bits[4:]
+        del bits[:4]
         return self.value
 
     def get_value(self) -> Any:

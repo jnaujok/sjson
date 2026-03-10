@@ -88,7 +88,7 @@ class ObjectNode(Node):
         bits = BitArray(bin=self.get_binary_code())
         named_nodes: list[NamedNode] = []
         for name, node in self.objects.items():
-            new_node = NamedNode(name, node)
+            new_node = NamedNode(name=name, node=Node.from_value(node))
             named_nodes.append(new_node)
             bits.append(new_node.to_binary(tag_dictionary))
 
@@ -110,12 +110,12 @@ class ObjectNode(Node):
         named_nodes = []
         if bits.length < 6:
             raise Exception("Insufficient bits to decode object")
-        if bits[0:3] != self.get_binary_code():
+        if bits[0:3].bin != self.get_binary_code():
             raise Exception("Invalid object type code")
-        bits = bits[3:]
-        while bits[0:3] != Node.END_OF_OBJECT:
+        del bits[0:3]
+        while bits[0:3].bin != Node.END_OF_OBJECT:
             named_nodes.append(NamedNode(bits=bits, tag_dictionary=tag_dictionary))
-        bits = bits[3:]
+        del bits[0:3]
         for node in named_nodes:
             self.objects[node.get_name()] = node.get_value()
 

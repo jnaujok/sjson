@@ -1,5 +1,6 @@
 from random import randint
 from typing import Any
+from zlib import crc32
 
 from bitstring import BitArray
 
@@ -75,7 +76,7 @@ class SJSON:
 
     def __init__(self) -> None:
         self.sender_dictionaries: dict[int, TagDictionary] = {}
-        # TODO: Get the sender id from the config file 
+        # TODO: Get the sender id from the config file
         self.sender_id = randint(0, 0xFFFF)
 
     def to_binary(self, json_object: Any) -> BitArray:
@@ -83,11 +84,18 @@ class SJSON:
         ret_val = BitArray(uint=self.sender_id, length=16) + data_node.to_binary(
             tag_dictionary=self.get_dictionary(self.sender_id)
         )
-        ret_val.crc
+        val = crc32(ret_val.tobytes())
+        ret_val += BitArray(uint=val, length=32)
+        return ret_val
 
     def to_value(self, bits: BitArray) -> Any:
-        sender_id = int(str(bits[0:16]), 2)
-        bits = bits[16:]
+        crc = int(bits[-32:].bin, 2)
+        del bits[-32:]
+        if crc != crc32(bits.tobytes()):
+            raise ValueError("CRC mismatch")
+
+        sender_id = int(bits[0:16].bin, 2)
+        del bits[:16]
         data_node = Node.from_bits(bits, self.get_dictionary(sender_id))
         return data_node.get_value()
 
