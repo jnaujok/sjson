@@ -26,7 +26,7 @@ class ArrayNode(Node):
 
     def __init__(
         self,
-        items: List[Node] | None = None,
+        items: List[Any] | None = None,
         bits: BitArray | None = None,
         tag_dictionary: TagDictionary | None = None,
     ) -> None:
@@ -77,7 +77,9 @@ class ArrayNode(Node):
         result = BitArray(bin=self.get_binary_code())
         result += BitArray(uint=len(self.items), length=16)
         for item in self.items:
-            result.append(item.to_binary(tag_dictionary=tag_dictionary))
+            result.append(
+                Node.from_value(item).to_binary(tag_dictionary=tag_dictionary)
+            )
         return result
 
     def to_value(
@@ -101,7 +103,7 @@ class ArrayNode(Node):
             bits = bits[3 + 16 :]  # noqa: E203
             # Get the items.
             for _ in range(length):
-                items.append(Node.from_bits(bits, tag_dictionary))
+                items.append(Node.from_bits(bits, tag_dictionary).get_value())
         self.items = items
         return items
 

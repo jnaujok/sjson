@@ -16,15 +16,15 @@
 
 from sjson.null_node import NullNode
 from bitstring import BitArray
-from typing import Any
+from sjson.node import Node
 
 
 class TestNullNode:
     def test_to_value(self) -> None:
-        node: NullNode = NullNode()
-        ba: BitArray = BitArray("000")
-        val = node.to_value()
-        assert val == None
+        ba: BitArray = BitArray('0b000')
+        val = Node.from_bits(ba)
+        assert isinstance(val, NullNode)
+        assert val.get_value() is None
 
     def test_to_binary(self) -> None:
         node: NullNode = NullNode()
@@ -36,6 +36,6 @@ class TestNullNode:
     def test_round_trip(self) -> None:
         node: NullNode = NullNode()
         ba: BitArray = node.to_binary()
-        value = node.to_value()
-        assert value is None, f"Expected None, got {value}"
+        value = Node.from_bits(ba)
+        assert value.get_value() is None, f"Expected None, got {value}"
         assert ba.bin == "000", f"Expected '000', got {ba.bin}"

@@ -14,56 +14,56 @@
 # License along with this library; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 
-import pytest
+from sjson.node import Node
 from sjson.number_node import NumberNode
 from bitstring import BitArray
-from typing import Any
+
 
 class TestNumberNode:
     def test_simple_number(self) -> None:
         node: NumberNode = NumberNode(123.45)
-        d: dict[str, Any] = node.to_dict()
-        assert "bcd" in d
-        assert "length" in d
-        node2: NumberNode = NumberNode.from_dict(d)
-        assert node2.value == 123.45
+        ba: BitArray = node.to_binary()
+        assert isinstance(ba, BitArray)
+        assert ba.bin == Node.NODE_NUMBER + "00000110000100100011101001000101"
 
     def test_integer(self) -> None:
         node: NumberNode = NumberNode(100)
-        d: dict[str, Any] = node.to_dict()
-        node2: NumberNode = NumberNode.from_dict(d)
-        assert node2.value == 100.0
+        ba: BitArray = node.to_binary()
+        assert isinstance(ba, BitArray)
+        assert ba.bin == Node.NODE_NUMBER + "00000011" + "000100000000"
 
     def test_scientific_notation_positive(self) -> None:
-        node: NumberNode = NumberNode(1.23e4)
-        d: dict[str, Any] = node.to_dict()
-        node2: NumberNode = NumberNode.from_dict(d)
-        assert node2.value == 12300.0
+        node: NumberNode = NumberNode(1.23e17)
+        ba: BitArray = node.to_binary()
+        assert isinstance(ba, BitArray)
+        assert ba.bin == Node.NODE_NUMBER + "0000100000011010001000111011110000010111"
 
     def test_scientific_notation_negative(self) -> None:
         node: NumberNode = NumberNode(1.23e-2)
-        d: dict[str, Any] = node.to_dict()
-        node2: NumberNode = NumberNode.from_dict(d)
-        assert node2.value == 0.0123
-
-    def test_zero(self) -> None:
-        node: NumberNode = NumberNode(0.0)
-        d: dict[str, Any] = node.to_dict()
-        node2: NumberNode = NumberNode.from_dict(d)
-        assert node2.value == 0.0
-
-    def test_to_binary(self) -> None:
-        node: NumberNode = NumberNode(123.45)
         ba: BitArray = node.to_binary()
         assert isinstance(ba, BitArray)
-        d: dict[str, Any] = node.to_dict()
-        assert ba[3:] == BitArray(bytes=d["bcd"])
+        assert ba.bin == Node.NODE_NUMBER + "00000110000010100000000100100011"
 
-    def test_round_trip_consistency(self) -> None:
-        test_values: list[float] = [123.45, 100, 0.0, 1.23e4, 1.23e-2, -123.45, -1.0]
-        for val in test_values:
-            val = float(val)
-            node: NumberNode = NumberNode(val)
-            d: dict[str, Any] = node.to_dict()
-            node2: NumberNode = NumberNode.from_dict(d)
-            assert node2.value == pytest.approx(expected=val, rel=1e-10) # pyright: ignore[reportUnknownMemberType]
+    def test_zero_float(self) -> None:
+        node: NumberNode = NumberNode(0.0)
+        ba: BitArray = node.to_binary()
+        assert isinstance(ba, BitArray)
+        assert ba.bin == Node.NODE_NUMBER + "00000011000010100000"
+
+    def test_zero_int(self) -> None:
+        node: NumberNode = NumberNode(0)
+        ba: BitArray = node.to_binary()
+        assert isinstance(ba, BitArray)
+        assert ba.bin == Node.NODE_NUMBER + "000000010000"
+
+    def test_nan(self) -> None:
+        node: NumberNode = NumberNode(float("nan"))
+        ba: BitArray = node.to_binary()
+        assert isinstance(ba, BitArray)
+        assert ba.bin == Node.NODE_NUMBER + "1111"
+
+    def test_inf(self) -> None:
+        node: NumberNode = NumberNode(float("inf"))
+        ba: BitArray = node.to_binary()
+        assert isinstance(ba, BitArray)
+        assert ba.bin == Node.NODE_NUMBER + "1110"

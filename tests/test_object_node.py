@@ -14,88 +14,66 @@
 # License along with this library; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 
-import pytest
 from sjson.object_node import ObjectNode
-from sjson.number_node import NumberNode
-from sjson.string_node import StringNode
-from sjson.boolean_node import BooleanNode
-from sjson.null_node import NullNode
-from sjson.array_node import ArrayNode
 from sjson.node import Node
 from bitstring import BitArray
 from typing import Any, Dict
 
+from sjson.tag_dictionary import TagDictionary
+
+
 class TestObjectNode:
     def test_empty_object(self) -> None:
         node: ObjectNode = ObjectNode({})
-        d: Dict[str, Any] = node.to_dict()
-        assert d == {"properties": {}}
-        node2: ObjectNode = ObjectNode.from_dict(d)
-        assert len(node2.properties) == 0
-
-    def test_single_property(self) -> None:
-        num_node: NumberNode = NumberNode(42.0)
-        node: ObjectNode = ObjectNode({"key": num_node})
-        d: Dict[str, Any] = node.to_dict()
-        assert len(d["properties"]) == 1
-        assert "bcd" in d["properties"]["key"]
-        node2: ObjectNode = ObjectNode.from_dict(d)
-        assert len(node2.properties) == 1
-        assert isinstance(node2.properties["key"], NumberNode)
-        assert node2.properties["key"].value == 42.0
-
-    def test_multiple_properties(self) -> None:
-        properties: Dict[str, Node] = {
-            "num": NumberNode(1.0),
-            "str": StringNode("hello"),
-            "bool": BooleanNode(True),
-            "null": NullNode()
-        }
-        node: ObjectNode = ObjectNode(properties)
-        d: Dict[str, Any] = node.to_dict()
-        assert len(d["properties"]) == 4
-        node2: ObjectNode = ObjectNode.from_dict(d)
-        assert len(node2.properties) == 4
-        assert isinstance(node2.properties["num"], NumberNode)
-        assert isinstance(node2.properties["str"], StringNode)
-        assert isinstance(node2.properties["bool"], BooleanNode)
-        assert isinstance(node2.properties["null"], NullNode)
-
-    def test_nested_object(self) -> None:
-        inner: ObjectNode = ObjectNode({"inner_key": NumberNode(1.0)})
-        outer: ObjectNode = ObjectNode({"outer_key": inner})
-        d: Dict[str, Any] = outer.to_dict()
-        assert len(d["properties"]) == 1
-        assert "properties" in d["properties"]["outer_key"]
-        outer2: ObjectNode = ObjectNode.from_dict(d)
-        assert len(outer2.properties) == 1
-        assert isinstance(outer2.properties["outer_key"], ObjectNode)
-
-    def test_to_binary(self) -> None:
-        properties: Dict[str, Node] = {"a": BooleanNode(True), "b": BooleanNode(False)}
-        node: ObjectNode = ObjectNode(properties)
         ba: BitArray = node.to_binary()
         assert isinstance(ba, BitArray)
-        assert len(ba) > 0  # Should have data
+        assert ba.bin == Node.NODE_OBJECT + Node.END_OF_OBJECT
 
-    def test_from_dict_invalid_type(self) -> None:
-        with pytest.raises(KeyError):
-            ObjectNode.from_dict({"type": "number"})
+    def test_single_property(self) -> None:
+        tag_dictionary: TagDictionary = TagDictionary()
+        obj_data: dict[str, Any] = {"key": 42.0}
+        node: ObjectNode = ObjectNode(obj_data)
+        ba: BitArray = node.to_binary(tag_dictionary)
+        assert isinstance(ba, BitArray)
+        assert str(ba.bin).startswith(Node.NODE_OBJECT)
+        assert tag_dictionary.lookup(1) == "key"
+        assert tag_dictionary.get("key") == 1
+        node2: Node = Node.from_bits(ba, tag_dictionary)
+        assert len(node2.get_value()) == 1
+        assert isinstance(node2.get_value()["key"], float)
+        assert node2.get_value()["key"] == 42.0
 
-    def test_round_trip(self) -> None:
-        properties: Dict[str, Node] = {
-            "number": NumberNode(123.45),
-            "string": StringNode("test"),
-            "boolean": BooleanNode(False),
-            "null": NullNode(),
-            "array": ArrayNode([NumberNode(1.0)])
+    def test_multiple_properties(self) -> None:
+        tag_dictionary: TagDictionary = TagDictionary()
+        properties: Dict[str, Any] = {
+            "num": 1.0,
+            "str": "hello",
+            "bool": True,
+            "null_node": None,
         }
         node: ObjectNode = ObjectNode(properties)
-        d: Dict[str, Any] = node.to_dict()
-        node2: ObjectNode = ObjectNode.from_dict(d)
-        assert len(node2.properties) == 5
-        assert isinstance(node2.properties["number"], NumberNode) and node2.properties["number"].value == 123.45
-        assert isinstance(node2.properties["string"], StringNode) and node2.properties["string"].value == "test"
-        assert isinstance(node2.properties["boolean"], BooleanNode) and node2.properties["boolean"].value is False
-        assert isinstance(node2.properties["null"], NullNode)
-        assert isinstance(node2.properties["array"], ArrayNode)
+        ba: BitArray = node.to_binary(tag_dictionary)
+        assert isinstance(ba, BitArray)
+        assert str(ba.bin).startswith(Node.NODE_OBJECT)
+        assert tag_dictionary.lookup(1) == "num"
+        assert tag_dictionary.lookup(2) == "str"
+        assert tag_dictionary.lookup(3) == "bool"
+        assert tag_dictionary.lookup(4) == "null_node"
+        node2: Node = Node.from_bits(ba, tag_dictionary)
+        assert len(node2.get_value()) == 4
+        assert isinstance(node2.get_value()["num"], float)
+        assert node2.get_value()["num"] == 1.0
+
+    def test_nested_object(self) -> None:
+        tag_dictionary: TagDictionary = TagDictionary()
+        inner: dict[str, Any] = {"inner_key": 42.0}
+        outer: dict[str, Any] = {"outer_key": inner.copy()}
+        ba: BitArray = ObjectNode(outer).to_binary(tag_dictionary)
+        assert isinstance(ba, BitArray)
+        assert str(ba.bin).startswith(Node.NODE_OBJECT)
+        outer2: Node = Node.from_bits(ba, tag_dictionary)
+        assert len(outer2.get_value()) == 1
+        assert isinstance(outer2.get_value()["outer_key"], dict)
+        inner2 = outer2.get_value()["outer_key"]
+        assert len(inner2) == 1
+        assert inner2["inner_key"] == 42.0

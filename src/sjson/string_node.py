@@ -119,18 +119,18 @@ class StringNode(Node):
                 compressed_bytes: bytes = lz4.frame.compress(self.value.encode("utf-8"))
                 compressed_length = len(compressed_bytes)
                 if compressed_length < len(self.value):
-                    compressed = BitArray("1")
+                    compressed = BitArray(bin="1")
                     data_bits = BitArray(bytes=compressed_bytes)
                     length = BitArray(uint=compressed_length, length=16)
                 else:
-                    compressed = BitArray("0")
+                    compressed = BitArray(bin="0")
                     data_bits = BitArray(bytes=self.value.encode("utf-8"))
-                    length = BitArray(len(self.value.encode("utf-8")), length=16)
+                    length = BitArray(uint=len(self.value.encode("utf-8")), length=16)
                 # Set uuid flags to zero length - not used.
                 hyphens = BitArray()
                 hex = BitArray()
             bits = (
-                BitArray(self.get_binary_code())
+                BitArray(bin=self.get_binary_code())
                 + uuid_flag
                 + hyphens
                 + hex
@@ -172,19 +172,19 @@ class StringNode(Node):
         if bits.len < 37:
             raise Exception("Insufficient bits to decode string")
         # Check for proper type code
-        if bits[0:3] != self.get_binary_code():
+        if bits[0:3].bin != self.get_binary_code():
             raise Exception("Invalid string type code")
         bits = bits[3:]
         # Check for UUID
-        uuid_flag = bits[0:1]
-        if uuid_flag.bin == "1":
-            hyphens = bits[1:2]
-            hex = bits[2:3]
+        uuid_flag = bits[0:1].bin
+        if uuid_flag == "1":
+            hyphens = bits[1:2].bin
+            hex = bits[2:3].bin
             bits = bits[3:]
             data = bits[: (16 * 8)]
             bits = bits[(16 * 8) :]  # noqa E501
-            self.hyphens = hyphens.bin == "1"
-            self.upper_case_hex = hex.bin == "1"
+            self.hyphens = hyphens == "1"
+            self.upper_case_hex = hex == "1"
             self.uuid = uuid.UUID(bytes=data.tobytes())
             self.is_uuid = True
             self.value = self.uuid.hex
@@ -207,15 +207,16 @@ class StringNode(Node):
             return self.value
         # Not a UUID
         bits = bits[1:]
-        compressed = bits[0:1]
-        length = bits[1:17]
-        data = bits[: int(length.uint) * 8]
-        bits = bits[int(length.uint) * 8 :]  # noqa E501
+        compressed = bits[0:1].bin
+        length = int(bits[1:17].bin, 2)
+        bits = bits[17:]
+        data = bits[: length * 8]
+        bits = bits[length * 8 :]  # noqa E501
         self.is_uuid = False
         self.hyphens = False
         self.uuid = None
         self.upper_case_hex = False
-        if compressed.bin == "1":
+        if compressed == "1":
             self.value = str(lz4.frame.decompress(data.tobytes()).decode("utf-8"))
         else:
             self.value = str(data.tobytes().decode("utf-8"))

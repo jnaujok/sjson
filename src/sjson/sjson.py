@@ -75,7 +75,7 @@ class SJSON:
 
     def __init__(self) -> None:
         self.sender_dictionaries: dict[int, TagDictionary] = {}
-        # TODO: Get the sender id from the config file
+        # TODO: Get the sender id from the config file 
         self.sender_id = randint(0, 0xFFFF)
 
     def to_binary(self, json_object: Any) -> BitArray:

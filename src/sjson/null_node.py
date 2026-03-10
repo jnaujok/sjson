@@ -69,7 +69,7 @@ class NullNode(Node):
             bits (BitArray): Binary data containing only the '000' type code (no
                            additional data).
         """
-        if bits[0:3] == Node.NODE_NULL:
+        if bits[0:3].bin == Node.NODE_NULL:
             bits = bits[3:]
             return None
         raise ValueError("Invalid null node found - bit pattern mismatch.")

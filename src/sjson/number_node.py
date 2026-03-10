@@ -14,6 +14,7 @@
 # License along with this library; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 
+import math
 from typing import Any
 
 from sjson.tag_dictionary import TagDictionary
@@ -65,13 +66,13 @@ class NumberNode(Node):
             ValueError: If the number contains invalid characters for BCD encoding.
         """
         # Handle the special cases of "Not a Number" and "Infinity"
-        if self.value == float("nan"):
-            return BitArray(self.get_binary_code()) + BitArray(uint=15, length=4)
-        elif self.value == float("inf"):
-            return BitArray(self.get_binary_code()) + BitArray(uint=14, length=4)
-        elif self.value == float("-inf"):
+        if math.isnan(self.value):
+            return BitArray(bin=self.get_binary_code()) + BitArray(uint=15, length=4)
+        elif self.value == math.inf:
+            return BitArray(bin=self.get_binary_code()) + BitArray(uint=14, length=4)
+        elif self.value == -math.inf:
             return (
-                BitArray(self.get_binary_code())
+                BitArray(bin=self.get_binary_code())
                 + BitArray(uint=13, length=4)
                 + BitArray(uint=14, length=4)
             )
@@ -98,7 +99,7 @@ class NumberNode(Node):
                 raise ValueError(f"Invalid character in number: {char}")
         length: int = len(nybbles)
         # Build out the bits
-        bits: BitArray = BitArray(self.get_binary_code()) + BitArray(
+        bits: BitArray = BitArray(bin=self.get_binary_code()) + BitArray(
             uint=length, length=8
         )
         for nybble in nybbles:
@@ -136,16 +137,16 @@ class NumberNode(Node):
         # Check for the minimum number of bits. (3 + 8 + 4)
         if len(bits) < 15:
             raise ValueError(f"Too few bits to be a number node: {len(bits)}")
-        if bits[0:3] != BitArray(self.get_binary_code()):
-            raise ValueError(f"Invalid number node type: {bits[0:3]}")
+        if bits[0:3].bin != self.get_binary_code():
+            raise ValueError(f"Invalid number node type: {bits[0:3].bin}")
         bits = bits[3:]
         # Get the length of the number
-        length: int = int(str(bits[0:8]), 2)
+        length: int = int(bits[0:8].bin, 2)
         bits = bits[8:]
         # Get the number
         value: str = ""
         for i in range(length):
-            nybble = int(str(bits[0:4]), 2)
+            nybble = int(bits[0:4].bin, 2)
             if nybble < 10:
                 value += str(nybble)
             else:

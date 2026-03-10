@@ -18,12 +18,6 @@ from abc import ABCMeta, abstractmethod
 from typing import Any
 from bitstring import BitArray
 
-from sjson.array_node import ArrayNode
-from sjson.boolean_node import BooleanNode
-from sjson.null_node import NullNode
-from sjson.number_node import NumberNode
-from sjson.object_node import ObjectNode
-from sjson.string_node import StringNode
 from sjson.tag_dictionary import TagDictionary
 
 
@@ -106,7 +100,14 @@ class Node(metaclass=ABCMeta):
         Returns:
             Node: A new Node instance.
         """
-        match str(bits[0:3]):
+        from sjson.array_node import ArrayNode
+        from sjson.boolean_node import BooleanNode
+        from sjson.null_node import NullNode
+        from sjson.number_node import NumberNode
+        from sjson.object_node import ObjectNode
+        from sjson.string_node import StringNode
+
+        match str(bits[0:3].bin):
             case Node.NODE_NULL:
                 return NullNode(bits=bits)
             case Node.NODE_BOOLEAN:
@@ -134,11 +135,18 @@ class Node(metaclass=ABCMeta):
         Returns:
             Node: A new Node instance.
         """
+        from sjson.array_node import ArrayNode
+        from sjson.boolean_node import BooleanNode
+        from sjson.null_node import NullNode
+        from sjson.number_node import NumberNode
+        from sjson.object_node import ObjectNode
+        from sjson.string_node import StringNode
+
         if value is None:
             return NullNode()
         elif isinstance(value, bool):
             return BooleanNode(value=value)
-        elif isinstance(value, int):
+        elif isinstance(value, int) or isinstance(value, float):
             return NumberNode(value=value)
         elif isinstance(value, str):
             return StringNode(value=value)
