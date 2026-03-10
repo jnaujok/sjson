@@ -61,3 +61,10 @@ class TestSJson:
         json_length = len(json.dumps(self.json).encode("utf-8"))
         assert val_length == json_length
         assert ba_len < json_length
+
+    def test_nak_dict(self) -> None:
+        ba = self.sjson.to_binary(self.json)
+        dict_ba = self.sjson.nak_dictionary(self.sjson.get_sender_id(), 0)
+        assert isinstance(ba, BitArray)
+        assert isinstance(dict_ba, BitArray)
+        assert len(dict_ba.tobytes()) == 116

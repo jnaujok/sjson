@@ -79,6 +79,9 @@ class SJSON:
         # TODO: Get the sender id from the config file
         self.sender_id = randint(0, 0xFFFF)
 
+    def get_sender_id(self) -> int:
+        return self.sender_id
+
     def to_binary(self, json_object: Any) -> BitArray:
         data_node = Node.from_value(json_object, self.get_dictionary(self.sender_id))
         ret_val = BitArray(uint=self.sender_id, length=16) + data_node.to_binary(
@@ -103,3 +106,43 @@ class SJSON:
         if sender_id not in self.sender_dictionaries:
             self.sender_dictionaries[sender_id] = TagDictionary()
         return self.sender_dictionaries[sender_id]
+
+    def nak_dictionary(self, sender_id: int, last_tag_id: int) -> BitArray:
+        """
+        When used in a streaming situation, the receiver mak NAK a request for a
+        dictionary update, with the highest numbered tag they know. If they've
+        never seen this sender before, then the NAK will be for a zero tag, and
+        the whole dictionary is sent.
+
+        Args:
+            last_tag_id (int): The highest numbered tag the receiver knows.
+
+        Returns:
+            BitArray: A bitstream containing the response to the NAK.
+            | bit numbers | description |
+            |:-----------:|:-----------:|
+            | 0-15 | Sender ID |
+            | 16-31 | Number of tags being returned |
+            | 32+ | tag id (8/16) + tag length (8) + tag value (variable) |
+        """
+        if sender_id not in self.sender_dictionaries:
+            return BitArray(uint=sender_id, length=16) + BitArray(uint=0, length=16)
+        sender_dict = self.sender_dictionaries[sender_id]
+        tag_list: list[tuple[int, str]] = sender_dict.get_tags(last_tag_id)
+
+        ret_val = BitArray(uint=sender_id, length=16) + BitArray(
+            uint=len(tag_list), length=16
+        )
+        for tag_id, tag_name in tag_list:
+            if tag_id < 128:
+                ret_val.append(BitArray(uint=tag_id, length=8))
+            else:
+                low = tag_id % 255
+                high = (tag_id // 255) + 128
+                ret_val.append(BitArray(uint=high, length=8))
+                ret_val.append(BitArray(uint=low, length=8))
+            str_bytes = tag_name.encode("utf-8")
+            ret_val.append(BitArray(uint=len(str_bytes), length=8))
+            ret_val.append(BitArray(str_bytes))
+
+        return ret_val

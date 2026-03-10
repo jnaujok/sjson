@@ -135,3 +135,18 @@ class TagDictionary:
             bits = str(value.bin[0:8])
         index = int(bits, 2)
         return self.lookup(index), len(bits)
+
+    def get_tags(self, last_tag_id: int) -> list[tuple[int, str]]:
+        """
+        Returns a list of all the tags that have been added to the dictionary
+        since the last time the dictionary was updated.
+
+        Args:
+            last_tag_id (int): The last tag id that was added to the dictionary
+
+        Returns:
+            list[tuple[int, str]]: The list of tags
+        """
+        return [
+            (index, tag) for index, tag in self._lookup.items() if index > last_tag_id
+        ]
