@@ -24,6 +24,7 @@ from sjson.node import Node
 from bitstring import BitArray
 from typing import Any, List
 
+
 class TestArrayNode:
     def test_empty_array(self) -> None:
         node: ArrayNode = ArrayNode([])
@@ -48,7 +49,7 @@ class TestArrayNode:
             NumberNode(1.0),
             StringNode("hello"),
             BooleanNode(True),
-            NullNode()
+            NullNode(),
         ]
         node: ArrayNode = ArrayNode(items)
         d: dict[str, Any] = node.to_dict()
@@ -76,8 +77,8 @@ class TestArrayNode:
         ba: BitArray = node.to_binary()
         assert isinstance(ba, BitArray)
         assert len(ba) == 11  # 3 (array) + 4 (bool1) + 4 (bool2)
-        assert ba[0] == True
-        assert ba[1] == False
+        assert ba[0] is True
+        assert ba[1] is False
 
     def test_from_dict_invalid_type(self) -> None:
         with pytest.raises(KeyError):
@@ -89,7 +90,7 @@ class TestArrayNode:
             StringNode("test"),
             BooleanNode(False),
             NullNode(),
-            ArrayNode([NumberNode(1.0)])
+            ArrayNode([NumberNode(1.0)]),
         ]
         node: ArrayNode = ArrayNode(items)
         d: dict[str, Any] = node.to_dict()

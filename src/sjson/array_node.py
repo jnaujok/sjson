@@ -14,32 +14,35 @@
 # License along with this library; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 
+from sjson.tag_dictionary import TagDictionary
+
 from .node import Node
 from typing import Any, List
 from bitstring import BitArray
-from .number_node import NumberNode
-from .string_node import StringNode
-from .boolean_node import BooleanNode
-from .null_node import NullNode
+
 
 class ArrayNode(Node):
     """Represents an array/collection of nodes in SJSON."""
 
-    def __init__(self, items: List[Node]) -> None:
+    def __init__(
+        self,
+        items: List[Node] | None = None,
+        bits: BitArray | None = None,
+        tag_dictionary: TagDictionary | None = None,
+    ) -> None:
         """Initialize an ArrayNode with a list of child nodes.
 
         Args:
             items: List of Node objects to store in the array.
         """
-        self.items: List[Node] = items
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert the array to a dictionary representation.
-
-        Returns:
-            dict[str, Any]: Dictionary with an 'items' key containing a list of node dictionaries.
-        """
-        return {"items": [item.to_dict() for item in self.items]}
+        if items is not None:
+            self.items: List[Node] = items
+        elif bits is not None and tag_dictionary is not None:
+            self.items = self.to_value(bits, tag_dictionary=tag_dictionary)
+        elif bits is not None and tag_dictionary is None:
+            raise ValueError("Tag dictionary must be provided if bits are provided.")
+        else:
+            self.items = []
 
     def get_type(self) -> str:
         """Return the type string for this node.
@@ -55,49 +58,57 @@ class ArrayNode(Node):
         Returns:
             str: '100' for array nodes.
         """
-        return "100"
+        return Node.NODE_ARRAY
 
-    def to_binary(self) -> BitArray:
-        """Convert the node to its binary representation.
-
-        Returns:
-            BitArray: Binary data starting with '100' type code followed by concatenated binary representations of all items.
+    def to_binary(self, tag_dictionary: TagDictionary | None = None) -> BitArray:
         """
-        result = BitArray(bin=self.get_binary_code())
-        for item in self.items:
-            result.append(item.to_binary())
-        return result
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> 'ArrayNode':
-        """Create an ArrayNode from a dictionary representation.
-
-        Recursively creates child nodes based on their dictionary formats.
-
-        Args:
-            data: Dictionary with an 'items' key containing a list of node dictionaries.
-
-        Returns:
-            ArrayNode: A new ArrayNode instance with child nodes.
+        Convert the node to its binary representation.
 
         Raises:
-            ValueError: If any item dictionary has an unknown format.
+            ValueError: If the array has more than 65535 items (16 bit length)
+
+        Returns:
+            BitArray: Binary data starting with '100' type code followed by
+                concatenated binary representations of all items.
         """
+        if len(self.items) > 65535:
+            raise ValueError("ArrayNode cannot have more than 65535 items.")
+
+        result = BitArray(bin=self.get_binary_code())
+        result += BitArray(uint=len(self.items), length=16)
+        for item in self.items:
+            result.append(item.to_binary(tag_dictionary=tag_dictionary))
+        return result
+
+    def to_value(
+        self, bits: BitArray, tag_dictionary: TagDictionary | None = None
+    ) -> Any:
+        """Convert the node to its value representation.
+
+        Args:
+            bits (BitArray): A bitstream that starts with the binary
+                representation of the node.
+
+        Returns:
+            Any: The value representation of the node.
+        """
+        # Confirm we have an array
         items = []
-        for item_data in data["items"]:
-            if "bcd" in item_data:
-                items.append(NumberNode.from_dict(item_data))
-            elif "value" in item_data and isinstance(item_data["value"], bool):
-                items.append(BooleanNode.from_dict(item_data))
-            elif "length" in item_data and "bits" in item_data:
-                items.append(StringNode.from_dict(item_data))
-            elif not item_data:
-                items.append(NullNode.from_dict(item_data))
-            elif "items" in item_data:
-                items.append(cls.from_dict(item_data))  # recursive
-            elif "properties" in item_data:
-                from .object_node import ObjectNode
-                items.append(ObjectNode.from_dict(item_data))
-            else:
-                raise ValueError(f"Unknown item data: {item_data}")
-        return cls(items)
+        if bits.bin[0:3] == self.get_binary_code():
+            # Get the number of items. The length is a 16 bit number
+            length = int(bits.bin[3 : 3 + 16], 2)  # noqa: E203
+            # Skip the type and length
+            bits = bits[3 + 16 :]  # noqa: E203
+            # Get the items.
+            for _ in range(length):
+                items.append(Node.from_bits(bits, tag_dictionary))
+        self.items = items
+        return items
+
+    def get_value(self) -> Any:
+        """Convert the node to its value representation.
+
+        Returns:
+            Any: The value representation of the node.
+        """
+        return self.items

@@ -14,73 +14,96 @@
 # License along with this library; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 
-from .node import Node
 from typing import Any
+
+from sjson.tag_dictionary import TagDictionary
+
+from .node import Node
 from bitstring import BitArray
 
-class NumberNode(Node):
-    """Represents a numeric value in SJSON, stored using Binary Coded Decimal (BCD) encoding."""
 
-    def __init__(self, value: float) -> None:
+class NumberNode(Node):
+    """
+    Represents a numeric value in SJSON, stored using an extended Binary Coded
+    Decimal (BCD) encoding that encorporates support for floating point numbers,
+    scientific notation, exponential notation, and the NaN and Infinity values.
+    """
+
+    def __init__(
+        self, value: float | None = None, bits: BitArray | None = None
+    ) -> None:
         """Initialize a NumberNode with a float value.
 
         Args:
             value: The numeric value to store.
         """
-        self.value: float = value
+        if value is not None:
+            self.value: float = value
+        elif bits is not None:
+            self.value = self.to_value(bits)
+        else:
+            self.value = 0.0
 
-    def to_dict(self) -> dict[str, Any]:
-        """Convert the number to a dictionary representation using BCD encoding.
+    def to_binary(self, tag_dictionary: TagDictionary | None = None) -> BitArray:
+        """Convert the number to a bitstream representation using BCD encoding.
 
-        The number is converted to a string, then each character is encoded as a 4-bit nybble:
+        The number is converted to a string, then each character is encoded as a
+        4-bit nybble:
         - Digits 0-9: 0-9
         - Decimal point: 10 (1010)
         - Exponent 'E': 11 (1011)
         - Plus sign: 12 (1100)
-        - Minus sign: 13 (1101) or 14 (1110) for negative numbers
+        - Minus sign: 13 (1101)
+        - Infinity: 14 (1110)
+        - NaN: 15 (1111)
 
         Returns:
-            dict[str, Any]: Dictionary with 'bcd' (bytes) and 'length' (int) keys.
+            Bit array with the encoded binary representation of the number led by
+            the type code.
 
         Raises:
             ValueError: If the number contains invalid characters for BCD encoding.
         """
+        # Handle the special cases of "Not a Number" and "Infinity"
+        if self.value == float("nan"):
+            return BitArray(self.get_binary_code()) + BitArray(uint=15, length=4)
+        elif self.value == float("inf"):
+            return BitArray(self.get_binary_code()) + BitArray(uint=14, length=4)
+        elif self.value == float("-inf"):
+            return (
+                BitArray(self.get_binary_code())
+                + BitArray(uint=13, length=4)
+                + BitArray(uint=14, length=4)
+            )
+
         # Convert float to string
         str_val: str = f"{self.value}"
         # Convert each char to BCD nybble
         nybbles: list[int] = []
-        last_char_was_exponent: bool = False
+        sign_found: bool = False
         for i, char in enumerate(str_val):
             if char.isdigit():
                 nybbles.append(int(char))
-                last_char_was_exponent = False
-            elif char == '.':
+            elif char == ".":
                 nybbles.append(10)  # 1010 binary
-                last_char_was_exponent = False
-            elif char == 'E' or char == 'e':
+            elif char == "E" or char == "e":
                 nybbles.append(11)  # 1011 binary for exponent
-                last_char_was_exponent = True
-            elif char == '+' and last_char_was_exponent:
+            elif char == "+" and not sign_found:
                 nybbles.append(12)  # 1100 binary for plus sign
-                last_char_was_exponent = False
-            elif char == '-' and last_char_was_exponent:
+                sign_found = True
+            elif char == "-" and not sign_found:
                 nybbles.append(13)  # 1101 binary for minus sign
-                last_char_was_exponent = False
-            elif char == '-' and i == 0:
-                nybbles.append(14)  # 1110 binary for negative sign
-                last_char_was_exponent = False
+                sign_found = i > 0  # only set sign if it's not the first char
             else:
                 raise ValueError(f"Invalid character in number: {char}")
         length: int = len(nybbles)
-        # Pack nybbles into bytes, 2 per byte, pad with 0 if odd
-        if len(nybbles) % 2 != 0:
-            nybbles.append(0)  # pad with 0
-        bcd_bytes: bytearray = bytearray()
-        for i in range(0, len(nybbles), 2):
-            high: int = nybbles[i] << 4
-            low: int = nybbles[i+1]
-            bcd_bytes.append(high | low)
-        return {"bcd": bytes(bcd_bytes), "length": length}
+        # Build out the bits
+        bits: BitArray = BitArray(self.get_binary_code()) + BitArray(
+            uint=length, length=8
+        )
+        for nybble in nybbles:
+            bits += BitArray(uint=nybble, length=4)
+        return bits
 
     def get_type(self) -> str:
         """Return the type string for this node.
@@ -94,68 +117,60 @@ class NumberNode(Node):
         """Return the 3-bit binary code for this node type.
 
         Returns:
-            str: '001' for number nodes.
+            str: '010' for number nodes.
         """
-        return "001"
+        return Node.NODE_NUMBER
 
-    def to_binary(self) -> BitArray:
-        """Convert the node to its binary representation.
-
-        Returns:
-            BitArray: Binary data starting with '001' type code followed by BCD bytes.
+    def to_value(
+        self, bits: BitArray, tag_dictionary: TagDictionary | None = None
+    ) -> float:
         """
-        d: dict[str, Any] = self.to_dict()
-        return BitArray(bin=self.get_binary_code()) + BitArray(bytes=d["bcd"])
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> 'NumberNode':
-        """Create a NumberNode from a dictionary representation.
+        Convert the bitstring number node representation to a float value.
 
         Args:
-            data: Dictionary with 'bcd' (bytes) and 'length' (int) keys.
+            bits (BitArray): The bitstream representation of the number.
 
         Returns:
-            NumberNode: A new NumberNode instance.
-
-        Raises:
-            ValueError: If the BCD data is invalid or cannot be converted to a float.
+            float: The float value of the number.
         """
-        bcd_bytes: bytes = data["bcd"]
-        length: int = data["length"]
-        nybbles: list[int] = []
-        for byte in bcd_bytes:
-            high: int = (byte >> 4) & 0xF
-            low: int = byte & 0xF
-            nybbles.extend([high, low])
-        # Take only the first 'length' nybbles
-        nybbles = nybbles[:length]
-        chars: list[str] = []
-        last_was_exponent: bool = False
-        for nybble in nybbles:
-            if 0 <= nybble <= 9:
-                chars.append(str(nybble))
-                last_was_exponent = False
-            elif nybble == 10:
-                chars.append('.')
-                last_was_exponent = False
-            elif nybble == 11:
-                chars.append('E')
-                last_was_exponent = True
-            elif nybble == 12 and last_was_exponent:
-                chars.append('+')
-                last_was_exponent = False
-            elif nybble == 13 and last_was_exponent:
-                chars.append('-')
-                last_was_exponent = False
-            elif nybble == 14:
-                chars.append('-')
-                last_was_exponent = False
+        # Check for the minimum number of bits. (3 + 8 + 4)
+        if len(bits) < 15:
+            raise ValueError(f"Too few bits to be a number node: {len(bits)}")
+        if bits[0:3] != BitArray(self.get_binary_code()):
+            raise ValueError(f"Invalid number node type: {bits[0:3]}")
+        bits = bits[3:]
+        # Get the length of the number
+        length: int = int(str(bits[0:8]), 2)
+        bits = bits[8:]
+        # Get the number
+        value: str = ""
+        for i in range(length):
+            nybble = int(str(bits[0:4]), 2)
+            if nybble < 10:
+                value += str(nybble)
             else:
-                raise ValueError(f"Invalid nybble in BCD: {nybble}")
-        str_val: str = ''.join(chars)
-        # For numbers with exponent, float() should handle it
-        try:
-            value: float = float(str_val)
-        except ValueError:
-            raise ValueError(f"Invalid number string: {str_val}")
-        return cls(value)
+                match nybble:
+                    case 10:
+                        value += "."
+                    case 11:
+                        value += "E"
+                    case 12:
+                        value += "+"
+                    case 13:
+                        value += "-"
+                    case 14:
+                        value += "inf"
+                    case 15:
+                        value += "nan"
+            bits = bits[4:]
+        # Convert the number
+        self.value = float(value)
+        return self.value
+
+    def get_value(self) -> Any:
+        """Convert the node to its value representation.
+
+        Returns:
+            float: The value representation of the node.
+        """
+        return self.value

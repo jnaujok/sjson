@@ -14,28 +14,42 @@
 # License along with this library; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 
+from sjson.named_node import NamedNode
+from sjson.tag_dictionary import TagDictionary
+
 from .node import Node
 from bitstring import BitArray
 from typing import Any, Dict
 
-class ObjectNode(Node):
-    """Represents an object/dictionary of named properties in SJSON, with name compression in binary format."""
 
-    def __init__(self, properties: Dict[str, Node]) -> None:
-        """Initialize an ObjectNode with a dictionary of named properties.
+class ObjectNode(Node):
+    """
+    Represents an object/dictionary of named properties, which can be converted
+    into a stream of bits, or converts a stream of bits into a dictionary of
+    named properties.
+    """
+
+    def __init__(
+        self,
+        obj: Dict[str, Any] | None = None,
+        bits: BitArray | None = None,
+        tag_dictionary: TagDictionary | None = None,
+    ) -> None:
+        """
+        Initialize an ObjectNode with a dictionary of named properties. Or extract
+        an object node from the binary representation.
 
         Args:
-            properties: Dictionary mapping property names to Node objects.
+            obj: The object to convert to an ObjectNode, or None if bits is not None
+            bits: The bitstream representation of the object, or None if obj is not None
         """
-        self.properties: Dict[str, Node] = properties
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert the object to a dictionary representation.
-
-        Returns:
-            dict[str, Any]: Dictionary with a 'properties' key containing name-to-node mappings.
-        """
-        return {"properties": {name: node.to_dict() for name, node in self.properties.items()}}
+        self.objects: dict[str, Any] = {}
+        if obj is not None:
+            self.objects = obj
+        elif bits is not None:
+            self.objects = self.to_value(bits, tag_dictionary=tag_dictionary)
+        else:
+            self.objects = {}
 
     def get_type(self) -> str:
         """Return the type string for this node.
@@ -51,59 +65,61 @@ class ObjectNode(Node):
         Returns:
             str: '101' for object nodes.
         """
-        return "101"
+        return Node.NODE_OBJECT
 
-    def to_binary(self) -> BitArray:
+    def to_binary(self, tag_dictionary: TagDictionary | None = None) -> BitArray:
         """Convert the node to its binary representation with name compression.
 
         Property names are compressed using a dictionary approach where each unique name
         gets an index. Names with index < 128 use 1 byte, others use 2 bytes.
+
+        Args:
+            tag_dictionary: The tag dictionary to use for name compression.
 
         Returns:
             BitArray: Binary data starting with '101' type code, followed by:
                      - 32-bit property count
                      - For each property: name index (1-2 bytes) + node binary data
         """
-        # Collect unique names in order seen
-        seen_names: list[str] = []
-        name_to_index: Dict[str, int] = {}
-        for name in self.properties:
-            if name not in name_to_index:
-                name_to_index[name] = len(seen_names)
-                seen_names.append(name)
+        if tag_dictionary is None:
+            raise ValueError("tag_dictionary cannot be None")
 
         # Encode
         bits = BitArray(bin=self.get_binary_code())
-        # Number of properties, 4 bytes
-        bits += BitArray(uint=len(self.properties), length=32)
-        # For each property
-        for name, node in self.properties.items():
-            index = name_to_index[name]
-            # Encode index
-            if index < 128:
-                bits += BitArray(uint=index, length=8)
-            else:
-                high = 0x80 + ((index - 128) // 128)
-                low = (index - 128) % 128
-                bits += BitArray(uint=high, length=8)
-                bits += BitArray(uint=low, length=8)
-            # Node binary
-            bits += node.to_binary()
+        named_nodes: list[NamedNode] = []
+        for name, node in self.objects.items():
+            new_node = NamedNode(name, node)
+            named_nodes.append(new_node)
+            bits.append(new_node.to_binary(tag_dictionary))
+
+        bits.append(BitArray(bin=Node.END_OF_OBJECT))
         return bits
 
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'ObjectNode':
-        """Create an ObjectNode from a dictionary representation.
+    def to_value(
+        self, bits: BitArray, tag_dictionary: TagDictionary | None = None
+    ) -> Any:
+        """Convert the binary stream data to an object node.
 
         Args:
-            data: Dictionary with a 'properties' key containing name-to-node-data mappings.
+            bits (BitArray): A bitstream that starts with the binary
+                representation of the node.
 
         Returns:
-            ObjectNode: A new ObjectNode instance with parsed child nodes.
-
-        Raises:
-            ValueError: If any property value has an unknown node format.
+            dict[str,Any]: The object.
         """
-        properties_data = data["properties"]
-        properties = {name: Node.from_dict(node_data) for name, node_data in properties_data.items()}
-        return cls(properties)
+        named_nodes = []
+        if bits.length < 6:
+            raise Exception("Insufficient bits to decode object")
+        if bits[0:3] != self.get_binary_code():
+            raise Exception("Invalid object type code")
+        bits = bits[3:]
+        while bits[0:3] != Node.END_OF_OBJECT:
+            named_nodes.append(NamedNode(bits=bits, tag_dictionary=tag_dictionary))
+        bits = bits[3:]
+        for node in named_nodes:
+            self.objects[node.get_name()] = node.get_value()
+
+        return self.objects
+
+    def get_value(self) -> Any:
+        return self.objects

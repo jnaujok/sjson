@@ -18,15 +18,34 @@ from abc import ABCMeta, abstractmethod
 from typing import Any
 from bitstring import BitArray
 
+from sjson.array_node import ArrayNode
+from sjson.boolean_node import BooleanNode
+from sjson.null_node import NullNode
+from sjson.number_node import NumberNode
+from sjson.object_node import ObjectNode
+from sjson.string_node import StringNode
+from sjson.tag_dictionary import TagDictionary
+
+
 class Node(metaclass=ABCMeta):
     """Base class for all nodes in the SJSON Abstract Syntax Tree (AST)."""
 
+    # Node type codes
+    NODE_NULL: str = "000"
+    NODE_BOOLEAN: str = "001"
+    NODE_NUMBER: str = "010"
+    NODE_STRING: str = "011"
+    NODE_ARRAY: str = "100"
+    NODE_OBJECT: str = "101"
+    END_OF_OBJECT: str = "110"
+    RESERVED: str = "111"
+
     @abstractmethod
-    def to_dict(self) -> dict[str, Any]:
-        """Convert the node to a dictionary representation.
+    def get_value(self) -> Any:
+        """Convert the node to its value representation.
 
         Returns:
-            dict[str, Any]: A dictionary containing the node's data without type information.
+            Any: The value representation of the node.
         """
         pass
 
@@ -44,57 +63,88 @@ class Node(metaclass=ABCMeta):
         """Return the 3-bit binary code for this node type.
 
         Returns:
-            str: A 3-character string of '0's and '1's representing the binary type code.
+            str: A 3-character string of '0's and '1's representing the binary
+                representation of the node type code.
         """
         pass
 
     @abstractmethod
-    def to_binary(self) -> BitArray:
+    def to_binary(self, tag_dictionary: TagDictionary | None = None) -> BitArray:
         """Convert the node to its binary representation.
 
         Returns:
-            BitArray: The binary representation of the node, starting with its 3-bit type code.
+            BitArray: The binary representation of the node, starting with its
+            3-bit type code.
+        """
+        pass
+
+    @abstractmethod
+    def to_value(
+        self, bits: BitArray, tag_dictionary: TagDictionary | None = None
+    ) -> Any:
+        """Convert the node to its value representation.
+
+        Args:
+            bits (BitArray): A bitstream that starts with the binary
+                representation of the node.
+
+        Returns:
+            Any: The value representation of the node.
         """
         pass
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> 'Node':
-        """Create a node from a dictionary representation.
-
-        This method dispatches to the appropriate node type based on the dictionary keys:
-        - 'bcd': NumberNode
-        - 'value' (bool): BooleanNode
-        - 'length' and 'bits': StringNode
-        - Empty dict: NullNode
-        - 'items': ArrayNode
-        - 'properties': ObjectNode
+    def from_bits(
+        cls, bits: BitArray, tag_dictionary: TagDictionary | None = None
+    ) -> Any:
+        """
+        Create a Node from its binary representation.
 
         Args:
-            data: A dictionary containing the node's data.
+            bits (BitArray): Binary representation of the node.
 
         Returns:
-            Node: An instance of the appropriate Node subclass.
-
-        Raises:
-            ValueError: If the dictionary format doesn't match any known node type.
+            Node: A new Node instance.
         """
-        if "bcd" in data:
-            from .number_node import NumberNode
-            return NumberNode.from_dict(data)
-        elif "value" in data and isinstance(data["value"], bool):
-            from .boolean_node import BooleanNode
-            return BooleanNode.from_dict(data)
-        elif "length" in data and "bits" in data:
-            from .string_node import StringNode
-            return StringNode.from_dict(data)
-        elif not data:
-            from .null_node import NullNode
-            return NullNode.from_dict(data)
-        elif "items" in data:
-            from .array_node import ArrayNode
-            return ArrayNode.from_dict(data)
-        elif "properties" in data:
-            from .object_node import ObjectNode
-            return ObjectNode.from_dict(data)
+        match str(bits[0:3]):
+            case Node.NODE_NULL:
+                return NullNode(bits=bits)
+            case Node.NODE_BOOLEAN:
+                return BooleanNode(bits=bits)
+            case Node.NODE_NUMBER:
+                return NumberNode(bits=bits)
+            case Node.NODE_STRING:
+                return StringNode(bits=bits)
+            case Node.NODE_ARRAY:
+                return ArrayNode(bits=bits, tag_dictionary=tag_dictionary)
+            case Node.NODE_OBJECT:
+                return ObjectNode(bits=bits, tag_dictionary=tag_dictionary)
+            case _:
+                raise ValueError(f"Unknown node type: {bits[0:3].bin}")
+
+    @classmethod
+    def from_value(
+        cls, value: Any, tag_dictionary: TagDictionary | None = None
+    ) -> "Node":
+        """Create a Node from its value representation.
+
+        Args:
+            value (Any): Value representation of the node.
+
+        Returns:
+            Node: A new Node instance.
+        """
+        if value is None:
+            return NullNode()
+        elif isinstance(value, bool):
+            return BooleanNode(value=value)
+        elif isinstance(value, int):
+            return NumberNode(value=value)
+        elif isinstance(value, str):
+            return StringNode(value=value)
+        elif isinstance(value, list):
+            return ArrayNode(items=value)
+        elif isinstance(value, dict):
+            return ObjectNode(obj=value, tag_dictionary=tag_dictionary)
         else:
-            raise ValueError(f"Unknown data format: {data}")
+            raise ValueError(f"Unsupported value type: {type(value)}")

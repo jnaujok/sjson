@@ -14,30 +14,28 @@
 # License along with this library; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 
-import pytest
 from sjson.null_node import NullNode
 from bitstring import BitArray
 from typing import Any
 
+
 class TestNullNode:
-    def test_to_dict(self) -> None:
+    def test_to_value(self) -> None:
         node: NullNode = NullNode()
-        d: dict[str, Any] = node.to_dict()
-        assert d == {}
+        ba: BitArray = BitArray("000")
+        val = node.to_value()
+        assert val == None
 
     def test_to_binary(self) -> None:
         node: NullNode = NullNode()
         ba: BitArray = node.to_binary()
         assert isinstance(ba, BitArray)
         assert len(ba) == 3
-        assert ba.bin == '000'
-
-    def test_from_dict(self) -> None:
-        node: NullNode = NullNode.from_dict({})
-        assert isinstance(node, NullNode)
+        assert ba.bin == "000"
 
     def test_round_trip(self) -> None:
         node: NullNode = NullNode()
-        d: dict[str, Any] = node.to_dict()
-        node2: NullNode = NullNode.from_dict(d)
-        assert isinstance(node2, NullNode)
+        ba: BitArray = node.to_binary()
+        value = node.to_value()
+        assert value is None, f"Expected None, got {value}"
+        assert ba.bin == "000", f"Expected '000', got {ba.bin}"

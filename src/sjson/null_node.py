@@ -14,24 +14,25 @@
 # License along with this library; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 
+from sjson.tag_dictionary import TagDictionary
+
 from .node import Node
 from typing import Any
 from bitstring import BitArray
 
+
 class NullNode(Node):
-    """Represents a null value in SJSON, stored with no additional data in binary format."""
+    """
+    Represents a null value in SJSON, stored with no additional data in
+    binary format.
+    """
 
-    def __init__(self) -> None:
-        """Initialize a NullNode. No parameters required as null has no value."""
-        pass
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert the null to a dictionary representation.
-
-        Returns:
-            dict[str, Any]: An empty dictionary representing null.
+    def __init__(self, bits: BitArray | None = None) -> None:
         """
-        return {}
+        Initialize a null node, or a null node from its binary representation.
+        """
+        if bits is not None:
+            self.to_value(bits)
 
     def get_type(self) -> str:
         """Return the type string for this node.
@@ -47,24 +48,31 @@ class NullNode(Node):
         Returns:
             str: '000' for null nodes.
         """
-        return "000"
+        return Node.NODE_NULL
 
-    def to_binary(self) -> BitArray:
+    def to_binary(self, tag_dictionary: TagDictionary | None = None) -> BitArray:
         """Convert the node to its binary representation.
 
         Returns:
-            BitArray: Binary data containing only the '000' type code (no additional data).
+            BitArray: Binary data containing only the '000' type code (no
+                      additional data).
         """
         return BitArray(bin=self.get_binary_code())
 
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> 'NullNode':
-        """Create a NullNode from a dictionary representation.
+    def to_value(
+        self, bits: BitArray, tag_dictionary: TagDictionary | None = None
+    ) -> Any:
+        """
+        Initialize the node from its binary representation.
 
         Args:
-            data: An empty dictionary (ignored for null nodes).
-
-        Returns:
-            NullNode: A new NullNode instance.
+            bits (BitArray): Binary data containing only the '000' type code (no
+                           additional data).
         """
-        return cls()
+        if bits[0:3] == Node.NODE_NULL:
+            bits = bits[3:]
+            return None
+        raise ValueError("Invalid null node found - bit pattern mismatch.")
+
+    def get_value(self) -> Any:
+        return None
