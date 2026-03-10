@@ -146,3 +146,30 @@ class SJSON:
             ret_val.append(BitArray(str_bytes))
 
         return ret_val
+
+    def load_dictionary(self, ba: BitArray) -> None:
+        """
+        Loads a dictionary from a bitstream.
+
+        Args:
+            ba (BitArray): The bitstream to load the dictionary from.
+        """
+        sender_id = int(ba[0:16].bin, 2)
+        tag_count = int(ba[16:32].bin, 2)
+        del ba[0:32]
+        for _ in range(tag_count):
+            if ba[0:1].bin == "1":
+                high = int(ba[1:8].bin, 2)
+                low = int(ba[8:16].bin, 2)
+                tag_id = high * 255 + low
+                del ba[0:16]
+            else:
+                tag_id = int(ba[1:8].bin, 2)
+                del ba[0:8]
+            name_length = int(ba[0:8].bin, 2)
+            del ba[0:8]
+            tag_name = ba[: name_length * 8].tobytes().decode("utf-8")
+            del ba[: name_length * 8]
+
+            if sender_id != self.get_sender_id():
+                self.get_dictionary(sender_id).set(tag_name, tag_id)
