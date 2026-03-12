@@ -1,4 +1,19 @@
-from bitstring import BitArray
+# Copyright (C) 2025 HarvestWave, LLC.
+#
+# This library is free software; you can redistribute it and/or
+# modify it under the terms of the GNU Lesser General Public
+# License as published by the Free Software Foundation; either
+# version 2.1 of the License, or (at your option) any later version.
+#
+# This library is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# Lesser General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public
+# License along with this library; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
+
 import threading
 
 
@@ -74,25 +89,18 @@ class TagDictionary:
         """
         return tag in self._tags
 
-    def has_tag_id(self, value: BitArray) -> bool:
+    def has_tag_id(self, tag_id: int) -> bool:
         """
-        Checks if the binary tag-id represented by the bitstream is in the known
+        Checks if the tag-id represented by the bitstream is in the known
         set of tags. If not, returns false.
 
         Args:
-            value (BitArray): The bitstream that starts with the binary
-                representation of the tag id.
+            tag_id (int): The integer value of the tag id.
 
         Returns:
             bool: True if the tag is known, false otherwise.
         """
-        # Check for 1 or 2 byte prefix bit.
-        if value.bin.startswith("1"):
-            bits = str(value.bin[0:16])
-        else:
-            bits = str(value.bin[0:8])
-        index = int(bits, 2)
-        return index in self._lookup
+        return tag_id in self._lookup
 
     def lookup(self, value: int) -> str:
         """
@@ -112,29 +120,23 @@ class TagDictionary:
             return self._lookup[value]
         raise ValueError("Invalid tag value: " + str(value))
 
-    def lookup_bits(self, value: BitArray) -> tuple[str, int]:
+    def lookup_tag(self, tag_id: int) -> str:
         """
-        Using the 8 or 16 bit tag id in binary format, looks up the tag in the
-        dictionary and returns the proper string value.
+        Using the tag id, this method looks up the tag in the dictionary and
+        returns the proper string value.
 
         Args:
-            value (BitArray): A bitstream that starts with the binary representation
-                of the tag id.
+            tag_id (int): The integer value of the tag id
 
         Raises:
-            ValueError: if the tag id is not in the dictionary
+            KeyError: if the tag id is not in the dictionary
 
         Returns:
             str: the string value of the tag id
-            int: the length of the tag id in bits
         """
-        # Check for 1 or 2 byte prefix bit.
-        if value.bin.startswith("1"):
-            bits = str(value.bin[0:16])
-        else:
-            bits = str(value.bin[0:8])
-        index = int(bits, 2)
-        return self.lookup(index), len(bits)
+        if not self.has_tag_id(tag_id):
+            raise KeyError(f"Unknown tag ID: {tag_id}")
+        return self.lookup(tag_id)
 
     def get_tags(self, last_tag_id: int) -> list[tuple[int, str]]:
         """

@@ -1,8 +1,25 @@
+# Copyright (C) 2025 HarvestWave, LLC.
+#
+# This library is free software; you can redistribute it and/or
+# modify it under the terms of the GNU Lesser General Public
+# License as published by the Free Software Foundation; either
+# version 2.1 of the License, or (at your option) any later version.
+#
+# This library is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# Lesser General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public
+# License along with this library; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
+
 from typing import Any
 
 from bitstring import BitArray
 
 from sjson.node import Node
+from sjson.nybble_field import NybbleField
 from sjson.tag_dictionary import TagDictionary
 
 
@@ -56,18 +73,13 @@ class NamedNode(Node):
         """
         if tag_dictionary is None:
             raise ValueError("Missing tag dictionary")
-        if len(bits) < 11:
+        if len(bits) < 5:
             raise ValueError("Not enough bits for name and node")
-        if bits[0:1].bin == "0":
-            tag_id = int(bits[0:8].bin, 2)
-            del bits[0:8]  # Remove the tag ID
-        else:
-            high_byte = int(bits[0:8].bin, 2)
-            low_byte = int(bits[8:16].bin, 2)
-            tag_id = ((high_byte % 128) * 255) + low_byte
-            del bits[0:16]  # Remove the high and low bytes of the tag ID
+        tag_id: int = NybbleField.to_value(bits)
         if tag_id == 0:
             raise ValueError("Named tag called with a nameless tag.")
+        if not tag_dictionary.has_tag_id(tag_id):
+            raise KeyError(f"Unknown tag ID: {tag_id}")
         self.name = tag_dictionary.lookup(tag_id)
         self.node = Node.from_bits(bits, tag_dictionary=tag_dictionary)
         return (self.name, self.node)
@@ -122,15 +134,7 @@ class NamedNode(Node):
                 tag_id = tag_dictionary.get(self.name)
             else:
                 tag_id = tag_dictionary.add(self.name)
-
-            if tag_id < 128:
-                bit_array.append(BitArray(uint=tag_id, length=8))
-            else:
-                high_byte = (tag_id // 255) + 128
-                low_byte = tag_id % 255
-                bit_array.append(BitArray(uint=high_byte, length=8))
-                bit_array.append(BitArray(uint=low_byte, length=8))
-
+            bit_array.append(NybbleField().to_binary(tag_id))
             bit_array.append(self.node.to_binary(tag_dictionary=tag_dictionary))
         else:
             if self.node is None:

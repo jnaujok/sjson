@@ -1,6 +1,6 @@
 [project]
 name = "sjson"
-version = "0.1.1"
+version = "0.1.2"
 description = "A streaming JSON library for highly compressed JSON transmission."
 authors = [
     {name = "Jeffrey Naujok",email = "jnaujok@harvestwave.com"}

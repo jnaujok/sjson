@@ -19,6 +19,7 @@ from typing import Any
 import uuid
 import lz4.frame
 
+from sjson.nybble_field import NybbleField
 from sjson.tag_dictionary import TagDictionary  # type: ignore
 from .node import Node
 from bitstring import BitArray
@@ -121,11 +122,11 @@ class StringNode(Node):
                 if compressed_length < len(self.value):
                     compressed = BitArray(bin="1")
                     data_bits = BitArray(bytes=compressed_bytes)
-                    length = BitArray(uint=compressed_length, length=16)
+                    length = NybbleField.to_binary(compressed_length)
                 else:
                     compressed = BitArray(bin="0")
                     data_bits = BitArray(bytes=self.value.encode("utf-8"))
-                    length = BitArray(uint=len(self.value.encode("utf-8")), length=16)
+                    length = NybbleField.to_binary(len(self.value.encode("utf-8")))
                 # Set uuid flags to zero length - not used.
                 hyphens = BitArray()
                 hex = BitArray()
@@ -168,8 +169,8 @@ class StringNode(Node):
         Returns:
             str: The string value.
         """
-        # Need at least 3 + 1 + 16 + 8 = 37 bits
-        if bits.len < 37:
+        # Need at least 3 + 1 + 5 = 9 bits for an empty string
+        if bits.len < 9:
             raise Exception("Insufficient bits to decode string")
         # Check for proper type code
         if bits[0:3].bin != self.get_binary_code():
@@ -208,8 +209,8 @@ class StringNode(Node):
         # Not a UUID
         del bits[:1]
         compressed = bits[0:1].bin
-        length = int(bits[1:17].bin, 2)
-        del bits[:17]
+        del bits[:1]
+        length = NybbleField.to_value(bits)
         data = bits[: length * 8]
         del bits[: length * 8]  # noqa E501
         self.is_uuid = False

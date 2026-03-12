@@ -46,7 +46,7 @@ class TestStringNode:
         node2: Node = Node.from_bits(ba)
         assert node2.get_value() == uuid_str
 
-    def test_regular_string(self) -> None:
+    def test_compressed_string(self) -> None:
         test_str: str = (
             "This This This This This This This This This This This This This This This"
             " This This This This This This This This This This This This This This"
@@ -62,6 +62,46 @@ class TestStringNode:
         assert node2.get_value() == test_str
 
     def test_empty_string(self) -> None:
+        """
+        Test the behavior of the StringNode when an empty string is passed.
+
+        This test case checks that the StringNode correctly encodes an empty
+        string into a bitstream. It verifies that the bitstream starts with the
+        correct type code, followed by the UUID flag set to 0, the compression
+        flag set to 0, and the length nybble field set to all zeros.
+
+        Parameters:
+            self (TestStringNode): The test case object.
+
+        Returns:
+            None
+        """
+        test_str: str = ""
+        node: StringNode = StringNode(test_str)
+        ba: BitArray = node.to_binary()
+        assert isinstance(ba, BitArray)
+        assert ba[0:3].bin == Node.NODE_STRING
+        assert ba[3:4].bin == "0"  # UUID flag
+        assert ba[4:5].bin == "0"  # Compression flag
+        assert ba[5:10].bin == "00000"  # Length nybble field
+        node2: Node = Node.from_bits(ba)
+        assert node2.get_value() == test_str
+
+    def test_uncompressed_string(self) -> None:
+        """
+        Test the behavior of the StringNode when an empty string is passed.
+
+        This test case checks that the StringNode correctly encodes an empty
+        string into a bitstream. It verifies that the bitstream starts with the
+        correct type code, followed by the UUID flag set to 0, the compression
+        flag set to 0, and the length nybble field set to all zeros.
+
+        Parameters:
+            self (TestStringNode): The test case object.
+
+        Returns:
+            None
+        """
         test_str: str = "abc"
         node: StringNode = StringNode(test_str)
         ba: BitArray = node.to_binary()
@@ -69,6 +109,6 @@ class TestStringNode:
         assert ba[0:3].bin == Node.NODE_STRING
         assert ba[3:4].bin == "0"  # UUID flag
         assert ba[4:5].bin == "0"  # Compression flag
-        assert ba[5 : 5 + 16].bin == "0000000000000011"  # noqa: E203
+        assert ba[5:10].bin == "00011"  # Length nybble field
         node2: Node = Node.from_bits(ba)
         assert node2.get_value() == test_str

@@ -64,22 +64,18 @@ class ArrayNode(Node):
         """
         Convert the node to its binary representation.
 
-        Raises:
-            ValueError: If the array has more than 65535 items (16 bit length)
-
         Returns:
             BitArray: Binary data starting with '100' type code followed by
                 concatenated binary representations of all items.
         """
-        if len(self.items) > 65535:
-            raise ValueError("ArrayNode cannot have more than 65535 items.")
-
         result = BitArray(bin=self.get_binary_code())
-        result += BitArray(uint=len(self.items), length=16)
         for item in self.items:
             result.append(
                 Node.from_value(item).to_binary(tag_dictionary=tag_dictionary)
             )
+        # Add the end of object marker. This saves 13 bis over encoding a length
+        # and allows arrays of any size.
+        result.append(BitArray(bin=Node.END_OF_OBJECT, length=3))
         return result
 
     def to_value(
@@ -97,13 +93,12 @@ class ArrayNode(Node):
         # Confirm we have an array
         items = []
         if bits.bin[0:3] == self.get_binary_code():
-            # Get the number of items. The length is a 16 bit number
-            length = int(bits.bin[3 : 3 + 16], 2)  # noqa: E203
-            # Skip the type and length
-            del bits[: 3 + 16]  # noqa: E203
+            # Skip the type
+            del bits[:3]
             # Get the items.
-            for _ in range(length):
+            while bits[:3].bin != Node.END_OF_OBJECT:
                 items.append(Node.from_bits(bits, tag_dictionary).get_value())
+            del bits[:3]
         self.items = items
         return items
 
