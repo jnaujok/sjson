@@ -19,6 +19,7 @@ import json
 
 from bitstring import BitArray
 from sjson.node import Node
+from sjson.nybble_field import NybbleField
 from sjson.sjson import SJSON
 
 
@@ -45,8 +46,11 @@ class TestSJson:
     def test_from_json(self) -> None:
         json_length = len(json.dumps(self.json).encode("utf-8"))
         ba = self.sjson.to_binary(self.json)
+        sender_and_length = SJSON.get_sender_id_and_length(ba)
+        nybble_length = NybbleField.get_nybble_size_bits(sender_and_length[1])
+        node_start = 16 + nybble_length
         assert isinstance(ba, BitArray)
-        assert ba[16:19].bin == Node.NODE_OBJECT
+        assert ba[node_start : node_start + 3].bin == Node.NODE_OBJECT  # noqa E501
         assert ba[-35:-32].bin == Node.END_OF_OBJECT
         bs_len = len(ba.tobytes())
         assert json_length > bs_len

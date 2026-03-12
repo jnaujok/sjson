@@ -115,7 +115,7 @@ class Node(metaclass=ABCMeta):
             case Node.NODE_NUMBER:
                 return NumberNode(bits=bits)
             case Node.NODE_STRING:
-                return StringNode(bits=bits)
+                return StringNode(bits=bits, tag_dictionary=tag_dictionary)
             case Node.NODE_ARRAY:
                 return ArrayNode(bits=bits, tag_dictionary=tag_dictionary)
             case Node.NODE_OBJECT:
@@ -149,9 +149,9 @@ class Node(metaclass=ABCMeta):
         elif isinstance(value, int) or isinstance(value, float):
             return NumberNode(value=value)
         elif isinstance(value, str):
-            return StringNode(value=value)
+            return StringNode(value=value, tag_dictionary=tag_dictionary)
         elif isinstance(value, list):
-            return ArrayNode(items=value)
+            return ArrayNode(items=value, tag_dictionary=tag_dictionary)
         elif isinstance(value, dict):
             return ObjectNode(obj=value, tag_dictionary=tag_dictionary)
         else:

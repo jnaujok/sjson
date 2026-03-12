@@ -18,6 +18,21 @@ from bitstring import BitArray
 
 
 class NybbleField:
+    """
+    A static class for encoding and decoding integer values into the smallest
+    reasonable set of bits. Basically encodes the value with 4 bit accuracy, using
+    only the nybbles that are needed to encode the data.
+
+    Raises:
+        ValueError: Only can encode positive values from 0 to 4,294,967,295
+        ValueError: Could not interpret the data in the binary field.
+    """
+
+    @classmethod
+    def get_nybble_size_bits(cls, value: int) -> int:
+        ba = cls.to_binary(value)
+        return ba.length
+
     @classmethod
     def to_binary(cls, value: int) -> BitArray:
         # if the value is less than 15, we return it as a single nybble with a

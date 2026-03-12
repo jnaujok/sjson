@@ -18,32 +18,38 @@ from sjson.node import Node
 from sjson.string_node import StringNode
 from bitstring import BitArray
 
+from sjson.tag_dictionary import TagDictionary
+
 
 class TestStringNode:
     def test_uuid_without_hyphens(self) -> None:
+        tag_dictionary: TagDictionary = TagDictionary()
         uuid_str: str = "1234567890123456AF90123456789012"
         node: StringNode = StringNode(uuid_str)
-        ba: BitArray = node.to_binary()
+        ba: BitArray = node.to_binary(tag_dictionary=tag_dictionary)
         assert isinstance(ba, BitArray)
         assert ba[0:3].bin == Node.NODE_STRING
-        assert ba[3:4].bin == "1"  # UUID flag
-        assert ba[4:5].bin == "0"  # Hyphen Flag
-        assert ba[5:6].bin == "1"  # Upper Case Flag
-        assert len(ba) == 128 + 6
-        node2: Node = Node.from_bits(ba)
+        assert ba[3:4].bin == "1"  # Special handling required flag
+        assert ba[4:7].bin == "000"  # Special-handling: UUID
+        assert ba[7:8].bin == "0"  # Hyphen Flag
+        assert ba[8:9].bin == "1"  # Upper Case Flag
+        assert len(ba) == 128 + 9
+        node2: Node = Node.from_bits(ba, tag_dictionary=tag_dictionary)
         assert node2.get_value() == uuid_str
 
     def test_uuid_with_hyphens(self) -> None:
+        tag_dictionary: TagDictionary = TagDictionary()
         uuid_str: str = "12345678-1234-a2f7-1234-123456789012"
         node: StringNode = StringNode(uuid_str)
-        ba: BitArray = node.to_binary()
+        ba: BitArray = node.to_binary(tag_dictionary)
         assert isinstance(ba, BitArray)
         assert ba[0:3].bin == Node.NODE_STRING
-        assert ba[3:4].bin == "1"  # UUID flag
-        assert ba[4:5].bin == "1"  # Hyphen Flag
-        assert ba[5:6].bin == "0"  # Upper Case Flag (set false)
-        assert len(ba) == 128 + 6
-        node2: Node = Node.from_bits(ba)
+        assert ba[3:4].bin == "1"  # Special handling required flag
+        assert ba[4:7].bin == "000"  # Special-handling: UUID
+        assert ba[7:8].bin == "1"  # Hyphen Flag
+        assert ba[8:9].bin == "0"  # Upper Case Flag
+        assert len(ba) == 128 + 9
+        node2: Node = Node.from_bits(ba, tag_dictionary)
         assert node2.get_value() == uuid_str
 
     def test_compressed_string(self) -> None:
@@ -56,8 +62,10 @@ class TestStringNode:
         ba: BitArray = node.to_binary()
         assert isinstance(ba, BitArray)
         assert ba[0:3].bin == Node.NODE_STRING
-        assert ba[3:4].bin == "0"  # UUID flag
-        assert ba[4:5].bin == "1"  # Compression flag
+        assert ba[3:4].bin == "1"  # Special handling required flag
+        assert (
+            ba[4:7].bin == StringNode.SPECIAL_HANDLING_LZ4.bin
+        )  # Special-handling: LZ4 Compressed
         node2: Node = Node.from_bits(ba)
         assert node2.get_value() == test_str
 
@@ -81,9 +89,8 @@ class TestStringNode:
         ba: BitArray = node.to_binary()
         assert isinstance(ba, BitArray)
         assert ba[0:3].bin == Node.NODE_STRING
-        assert ba[3:4].bin == "0"  # UUID flag
-        assert ba[4:5].bin == "0"  # Compression flag
-        assert ba[5:10].bin == "00000"  # Length nybble field
+        assert ba[3:4].bin == "1"  # Special handling required flag
+        assert ba[4:7].bin == StringNode.SPECIAL_HANDLING_EMPTY_STRING.bin
         node2: Node = Node.from_bits(ba)
         assert node2.get_value() == test_str
 
@@ -107,8 +114,19 @@ class TestStringNode:
         ba: BitArray = node.to_binary()
         assert isinstance(ba, BitArray)
         assert ba[0:3].bin == Node.NODE_STRING
-        assert ba[3:4].bin == "0"  # UUID flag
-        assert ba[4:5].bin == "0"  # Compression flag
-        assert ba[5:10].bin == "00011"  # Length nybble field
+        assert ba[3:4].bin == StringNode.NO_SPECIAL_HANDLING.bin
+        assert ba[4:9].bin == "00011"  # Length nybble field
         node2: Node = Node.from_bits(ba)
+        assert node2.get_value() == test_str
+
+    def test_url_encoding(self) -> None:
+        tag_dictionary: TagDictionary = TagDictionary()
+        test_str: str = "https://harvestwave.com"
+        node: StringNode = StringNode(test_str)
+        ba: BitArray = node.to_binary(tag_dictionary=tag_dictionary)
+        assert isinstance(ba, BitArray)
+        assert ba[0:3].bin == Node.NODE_STRING
+        assert ba[3:4].bin == StringNode.NEEDS_SPECIAL_HANDLING.bin
+        assert ba[4:7].bin == StringNode.SPECIAL_HANDLING_URL.bin  # URL flag
+        node2: Node = Node.from_bits(ba, tag_dictionary=tag_dictionary)
         assert node2.get_value() == test_str
