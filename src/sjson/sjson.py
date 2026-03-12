@@ -113,9 +113,13 @@ class SJSON:
         """
         # Create a copy so we don't modify the bitstream
         temp: BitArray = BitArray(bits[0 : min(64, bits.length)])  # noqa E501
+        init_length = temp.length
         sender_id = int(temp[0:16].bin, 2)
         del temp[0:16]
         length = NybbleField.to_value(temp)
+        final_length = temp.length
+        length += init_length - final_length  # Add back on the length of the header
+        del temp
         return sender_id, length
 
     def to_binary(self, json_object: Any) -> BitArray:
