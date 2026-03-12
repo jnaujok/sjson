@@ -21,6 +21,7 @@ from zlib import crc32
 from bitstring import BitArray
 
 from sjson.node import Node
+from sjson.nybble_field import NybbleField
 from sjson.tag_dictionary import TagDictionary
 
 
@@ -98,16 +99,66 @@ class SJSON:
     def get_sender_id(self) -> int:
         return self.sender_id
 
+    @classmethod
+    def get_sender_id_and_length(cls, bits: BitArray) -> tuple[int, int]:
+        """
+        Given at least the first 8 bytes of the bitstream, extract the sender ID
+        and the length of the message.
+
+        Args:
+            bits (BitArray): The raw bitstream being decoded.
+
+        Returns:
+            tuple[int, int]: The sender ID and the length of the message.
+        """
+        # Create a copy so we don't modify the bitstream
+        temp: BitArray = BitArray(bits[0 : min(64, bits.length)])  # noqa E501
+        sender_id = int(temp[0:16].bin, 2)
+        del temp[0:16]
+        length = NybbleField.to_value(temp)
+        return sender_id, length
+
     def to_binary(self, json_object: Any) -> BitArray:
+        """
+        Encode the JSON object into a bitstream.
+
+        The bitstream is encoded with the sender_id and the length
+        of the encoded data (in bits) at the front, and a 32 bit CRC tacked
+        on at the back end. Note that this may not be an even number of bytes,
+        but will be back-padded by zeros if necessary when sent as a byte array.
+
+        Args:
+            json_object (Any): The JSON object to encode.
+
+        Returns:
+            BitArray: The encoded bitstream
+        """
         data_node = Node.from_value(json_object, self.get_dictionary(self.sender_id))
-        ret_val = BitArray(uint=self.sender_id, length=16) + data_node.to_binary(
+        data_bits = data_node.to_binary(
             tag_dictionary=self.get_dictionary(self.sender_id)
+        )
+        ret_val = (
+            BitArray(uint=self.sender_id, length=16)
+            + NybbleField.to_binary(data_bits.length)
+            + data_bits
         )
         val = crc32(ret_val.tobytes())
         ret_val += BitArray(uint=val, length=32)
         return ret_val
 
     def to_value(self, bits: BitArray) -> Any:
+        """
+        This method decodes a raw bitstream into the JSON object it represents.
+
+        Args:
+            bits (BitArray): The raw bitstream to decode.
+
+        Raises:
+            ValueError: If the CRC does not match.
+            KeyError: If the tag ID is not known for this sender.
+        Returns:
+            Any: The decoded JSON object.
+        """
         crc = int(bits[-32:].bin, 2)
         del bits[-32:]
         if crc != crc32(bits.tobytes()):
@@ -115,10 +166,25 @@ class SJSON:
 
         sender_id = int(bits[0:16].bin, 2)
         del bits[:16]
+
+        _ = NybbleField.to_value(bits)  # Extract the data length (not used)
+
         data_node = Node.from_bits(bits, self.get_dictionary(sender_id))
+
         return data_node.get_value()
 
     def get_dictionary(self, sender_id: int) -> TagDictionary:
+        """
+        Given a sender ID, this method returns the associated dictionary of tags.
+        If the sender ID is not in the known set of senders, adds a new dictionary
+        assigned to that sender and returns the empty dictionary.
+
+        Args:
+            sender_id (int): The sender ID to look up.
+
+        Returns:
+            TagDictionary: The dictionary of tags for the given sender.
+        """
         if sender_id not in self.sender_dictionaries:
             self.sender_dictionaries[sender_id] = TagDictionary()
         return self.sender_dictionaries[sender_id]
