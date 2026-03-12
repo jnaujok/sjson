@@ -24,6 +24,11 @@ from sjson.tag_dictionary import TagDictionary  # type: ignore
 from .node import Node
 from bitstring import BitArray
 
+from logging import Logger, getLogger
+
+log: Logger = getLogger(__name__)
+log.setLevel("DEBUG")
+
 
 class StringNode(Node):
     """
@@ -58,12 +63,6 @@ class StringNode(Node):
     SPECIAL_HANDLING_EMPTY_STRING: BitArray = BitArray(
         bin="111", length=SPECIAL_HANDLING_LENGTH
     )
-
-    # The range encoding bits
-    ENCODE_FOUR_BIT: BitArray = BitArray(bin="00", length=2)
-    ENCODE_FIVE_BIT: BitArray = BitArray(bin="01", length=2)
-    ENCODE_SIX_BIT: BitArray = BitArray(bin="10", length=2)
-    ENCODE_SEVEN_BIT: BitArray = BitArray(bin="11", length=2)
 
     def __init__(
         self,
@@ -111,13 +110,19 @@ class StringNode(Node):
 
         # Handle special cases
         if len(self.value) == 0:
+            log.debug("Encoding empty string")
             data_bits = self._empty_string_to_binary()
         elif self._is_uuid():
+            log.debug(f"Encoding UUID {self.value}")
             data_bits = self._uuid_to_binary()
         elif self._is_url():
+            log.debug(f"Encoding URL {self.value}")
             data_bits = self._url_to_binary(tag_dictionary)
         else:
+            log.debug(f"Encoding normal string {self.value}")
             data_bits = self._string_to_binary()
+
+        log.debug(f"Data bits length: {data_bits.length}")
 
         return BitArray(bin=self.get_binary_code(), length=3) + data_bits
 
@@ -241,14 +246,27 @@ class StringNode(Node):
         # And build the raw data bits for a normal string
         data_bits = self._encode_string()
 
+        log.info(
+            f"Encoded Sizes: raw[{data_bits.length}] "
+            f"lz4[{compressed_bits.length}] "
+            f"range[{range_compressed.length}]"
+        )
+
         if (
             range_compressed.length < data_bits.length
             and range_compressed.length < compressed_bits.length
         ):
+            log.debug(
+                f"Range compressing: {data_bits.length} to {range_compressed.length}"
+            )
             data_bits = range_compressed
         elif compressed_bits.length < data_bits.length:
+            log.debug(
+                f"LZ4 compressing: {data_bits.length} to {compressed_bits.length}"
+            )
             data_bits = compressed_bits
-
+        else:
+            log.debug(f"No compression: {data_bits.length}")
         return data_bits
 
     def _encode_string(self) -> BitArray:
@@ -341,15 +359,12 @@ class StringNode(Node):
             data_bits.append(StringNode.SPECIAL_HANDLING_7BIT)
 
         # Set the range compression flag
-        str_len = NybbleField.to_binary(len(self.value))
+        data_bits.append(NybbleField.to_binary(len(self.value)))
+        data_bits.append(NybbleField.to_binary(base))
         for char in self.value:
-            data_bits += BitArray(uint=ord(char) - base, length=bit_length)
+            data_bits.append(BitArray(uint=ord(char) - base, length=bit_length))
 
-        range_compressed = (
-            data_bits + str_len + BitArray(uint=base, length=7) + data_bits
-        )
-
-        return range_compressed
+        return data_bits
 
     def _uuid_to_binary(self) -> BitArray:
         """

@@ -69,6 +69,21 @@ class TestStringNode:
         node2: Node = Node.from_bits(ba)
         assert node2.get_value() == test_str
 
+    def test_range_compressed_string(self) -> None:
+        test_str: str = (
+            "abcbdefbcababdeffabcbbabebedbcbcbddbcbdebdanfeebfgaaabgabdgfaefacbdf"
+        )
+        node: StringNode = StringNode(test_str)
+        ba: BitArray = node.to_binary()
+        assert isinstance(ba, BitArray)
+        assert ba[0:3].bin == Node.NODE_STRING
+        assert ba[3:4].bin == "1"  # Special handling required flag
+        assert (
+            ba[4:7].bin == StringNode.SPECIAL_HANDLING_4BIT.bin
+        )  # Special-handling: Range compressed to 4 bits
+        node2: Node = Node.from_bits(ba)
+        assert node2.get_value() == test_str
+
     def test_empty_string(self) -> None:
         """
         Test the behavior of the StringNode when an empty string is passed.
