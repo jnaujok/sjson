@@ -14,11 +14,11 @@
 # License along with this library; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 
-from sjson.node import Node
-from sjson.string_node import StringNode
+from sjson.nodes.node import Node
+from sjson.nodes.string_node import StringNode
 from bitstring import BitArray
 
-from sjson.tag_dictionary import TagDictionary
+from sjson.dictionary.tag_dictionary import TagDictionary
 
 
 class TestStringNode:
@@ -69,6 +69,19 @@ class TestStringNode:
         node2: Node = Node.from_bits(ba)
         assert node2.get_value() == test_str
 
+    def test_rle_compressed_string(self) -> None:
+        test_str: str = "00000000000000000000000000000002"
+        node: StringNode = StringNode(test_str)
+        ba: BitArray = node.to_binary()
+        assert isinstance(ba, BitArray)
+        assert ba[0:3].bin == Node.NODE_STRING
+        assert ba[3:4].bin == "1"  # Special handling required flag
+        assert (
+            ba[4:7].bin == StringNode.SPECIAL_HANDLING_RLE.bin
+        )  # Special-handling: RLE Compressed
+        node2: Node = Node.from_bits(ba)
+        assert node2.get_value() == test_str
+
     def test_range_compressed_string(self) -> None:
         test_str: str = (
             "abcbdefbcababdeffabcbbabebedbcbcbddbcbdebdanfeebfgaaabgabdgfaefacbdf"
@@ -79,7 +92,7 @@ class TestStringNode:
         assert ba[0:3].bin == Node.NODE_STRING
         assert ba[3:4].bin == "1"  # Special handling required flag
         assert (
-            ba[4:7].bin == StringNode.SPECIAL_HANDLING_4BIT.bin
+            ba[4:7].bin == StringNode.SPECIAL_HANDLING_5BIT.bin
         )  # Special-handling: Range compressed to 4 bits
         node2: Node = Node.from_bits(ba)
         assert node2.get_value() == test_str

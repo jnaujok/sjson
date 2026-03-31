@@ -18,8 +18,8 @@ import uuid
 import json
 
 from bitstring import BitArray
-from sjson.node import Node
-from sjson.nybble_field import NybbleField
+from sjson.nodes.node import Node
+from sjson.fields.nybble_field import NybbleField
 from sjson.sjson import SJSON
 
 

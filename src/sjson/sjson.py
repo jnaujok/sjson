@@ -20,9 +20,9 @@ from zlib import crc32
 
 from bitstring import BitArray
 
-from sjson.node import Node
-from sjson.nybble_field import NybbleField
-from sjson.tag_dictionary import TagDictionary
+from sjson.nodes.node import Node
+from sjson.fields.nybble_field import NybbleField
+from sjson.dictionary.tag_dictionary import TagDictionary
 
 
 class SJSON:

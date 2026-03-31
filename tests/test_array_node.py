@@ -14,12 +14,12 @@
 # License along with this library; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 
-from sjson.array_node import ArrayNode
-from sjson.node import Node
+from sjson.nodes.array_node import ArrayNode
+from sjson.nodes.node import Node
 from bitstring import BitArray
 from typing import Any
 
-from sjson.tag_dictionary import TagDictionary
+from sjson.dictionary.tag_dictionary import TagDictionary
 
 
 class TestArrayNode:

@@ -14,9 +14,9 @@
 # License along with this library; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 
-from sjson.boolean_node import BooleanNode
+from sjson.nodes.boolean_node import BooleanNode
 from bitstring import BitArray
-from sjson.node import Node
+from sjson.nodes.node import Node
 
 
 class TestBooleanNode:
