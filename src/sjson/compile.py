@@ -65,7 +65,7 @@ def compile_dictionary(
     samples: Iterable[Any] = (),
     intern_min_count: int | None = None,
     max_value_length: int = 64,
-    text_dictionary_size: int = 16384,
+    text_dictionary_size: int = 0,
     **schema_options: Any,
 ) -> TagDictionary:
     """
@@ -81,9 +81,10 @@ def compile_dictionary(
         intern_min_count: If given, sample strings that occur at least this
             many times (and are at most ``max_value_length`` characters long)
             are added to the interned values.
-        text_dictionary_size: With samples, also train a zstd dictionary of
-            about this many bytes on the samples' longer strings, used by the
-            text channel (0 disables it).
+        text_dictionary_size: Opt-in. With samples, also train a zstd
+            dictionary of about this many bytes (e.g. 16384) on the samples'
+            longer strings, used by the text channel. It only helps traffic
+            that resembles the samples, so it is off (0) by default.
         schema_options: Passed to the XSD loader.
     """
     from sjson.schema import load_schema
@@ -206,8 +207,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--text-dictionary-size",
         type=int,
-        default=16384,
-        help="size of the zstd text dictionary trained on samples (0: none)",
+        default=0,
+        help="opt-in: train a zstd text dictionary of about this many bytes "
+        "on the samples (default 0: none)",
     )
     parser.add_argument(
         "--xsd-string-values",

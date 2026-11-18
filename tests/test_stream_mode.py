@@ -180,7 +180,7 @@ class TestStreamMode:
 
     def test_text_dictionary_without_stream_mode(self) -> None:
         samples = documents(30)
-        dictionary = compile_dictionary(samples=samples)
+        dictionary = compile_dictionary(samples=samples, text_dictionary_size=16384)
         assert dictionary.text_dictionary is not None
         sender = SJSON(sender_id=7, dictionary=dictionary)
         receiver = SJSON(sender_id=8)
@@ -201,9 +201,15 @@ class TestStreamMode:
             assert len(packet) < len(plain.to_binary(doc))
 
     def test_text_dictionary_is_saved(self, tmp_path: Path) -> None:
-        dictionary = compile_dictionary(samples=documents(30))
+        dictionary = compile_dictionary(
+            samples=documents(30), text_dictionary_size=16384
+        )
         path = tmp_path / "d.json"
         dictionary.save(path)
         loaded = type(dictionary).load(path)
         assert loaded.text_dictionary == dictionary.text_dictionary
         assert loaded.fingerprint == dictionary.fingerprint
+
+
+def test_text_dictionary_is_opt_in() -> None:
+    assert compile_dictionary(samples=documents(30)).text_dictionary is None

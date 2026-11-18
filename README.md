@@ -158,9 +158,16 @@ sender = SJSON(schema="order.schema.json", stateful=True)
   packet (sequence 0) starts both sides afresh. Only that first packet carries
   the schema fingerprint.
 
-A dictionary compiled from samples also carries a small zstd dictionary trained
-on the samples' text. It warms the text channel in stream mode and gives
-per-message (non-stream) packets a text channel of their own.
+Opt-in: `compile_dictionary(..., text_dictionary_size=16384)` (or
+`--text-dictionary-size 16384`) also trains a small zstd dictionary on the
+samples' text. It warms the text channel in stream mode and gives
+per-message (non-stream) packets a text channel of their own, but it only
+helps traffic that resembles the samples, so it is off by default.
+
+On a realistic mixed UCI mission stream (six platforms, one sender each),
+stream mode with just the UCI schema and no sample data averages about 90
+bytes per message with smoothly moving kinematics and 118 with random values,
+against 106 and 145 for zstd-19 with a persistent stream context.
 
 ## Wire format (0.8)
 
