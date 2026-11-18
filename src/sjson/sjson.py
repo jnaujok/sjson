@@ -207,9 +207,12 @@ class SJSON:
 
     def reset_stream(self) -> None:
         """
-        Stream mode: forget all cached values. The next packet carries
-        sequence 0, which tells receivers to forget theirs too.
+        Stream mode: forget all cached values and every name or value learnt
+        since the pre-loaded dictionary. The next packet carries sequence 0,
+        which tells receivers to do the same, so both sides start again from
+        what they share.
         """
+        self.get_dictionary(self.sender_id).reset_to_base()
         self._stream = StreamState(self.cache_width) if self.stateful else None
         self._sequence = 0
         self._text = None
@@ -476,6 +479,7 @@ class SJSON:
             return None
         assert header.sequence is not None and header.cache_width is not None
         if header.sequence == 0:
+            self.get_dictionary(header.sender_id).reset_to_base()
             return StreamState(header.cache_width)
         current = self._streams.get(header.sender_id)
         if current is None or current[1] != header.sequence:

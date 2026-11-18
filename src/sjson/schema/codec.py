@@ -215,17 +215,36 @@ class SchemaCodec:
                 expected = list if plan == KIND_ARRAY else dict
                 if not isinstance(value, expected):
                     raise NonConformingError(f"Expected {plan}, got {value!r}")
+                # Cache the value as the receiver will decode it (members in
+                # schema order), so both sides' caches hold identical entries.
+                canonical = self._canonical(value, schema)
 
                 def plain() -> BitArray:
                     bits = BitArray()
-                    encode(value, schema, bits, key)
+                    encode(canonical, schema, bits, key)
                     return bits
 
-                out.append(stream.encode(key + "#", value, plain))
+                out.append(stream.encode(key + "#", canonical, plain))
             else:
                 encode(value, schema, out, key)
         else:  # pragma: no cover - plans are exhaustive
             raise AssertionError(plan)
+
+    def _canonical(self, value: Any, schema: SchemaType) -> Any:
+        """``value`` with object members in the order the decoder produces."""
+        plan, _ = self._plan(schema)
+        if plan == KIND_OBJECT and isinstance(value, dict):
+            properties = schema.properties
+            result = {
+                name: self._canonical(value[name], prop.type)
+                for name, prop in properties.items()
+                if name in value
+            }
+            result.update((k, v) for k, v in value.items() if k not in properties)
+            return result
+        if plan == KIND_ARRAY and isinstance(value, list) and schema.items is not None:
+            return [self._canonical(item, schema.items) for item in value]
+        return value
 
     def _encode_enum(self, value: Any, schema: SchemaType, out: BitArray) -> None:
         options = schema.enum or []

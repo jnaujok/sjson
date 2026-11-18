@@ -263,6 +263,12 @@ class TagDictionary:
                     del dictionary._tags[dictionary._lookup.pop(index)]
                 dictionary.last_index = last
 
+    def reset_to_base(self) -> None:
+        """Forget every entry learnt after the pre-loaded ones."""
+        values_base = 0 if self.values is None else self.values.base_size
+        self.rollback((self.base_size, values_base))
+        self.seen_urls.clear()
+
     # -- inline definitions (stream mode) -----------------------------------
 
     def encode_id(self, tag: str) -> BitArray:

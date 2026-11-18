@@ -213,3 +213,46 @@ class TestStreamMode:
 
 def test_text_dictionary_is_opt_in() -> None:
     assert compile_dictionary(samples=documents(30)).text_dictionary is None
+
+
+class TestReviewFindings:
+    def test_member_order_does_not_desync_schema_caches(self) -> None:
+        schema = {
+            "type": "object",
+            "properties": {
+                "o": {
+                    "type": "object",
+                    "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}},
+                }
+            },
+        }
+        sender = SJSON(sender_id=7, stateful=True, schema=schema)
+        receiver = SJSON(sender_id=8)
+        receiver.register_schema(schema)
+        for doc in [
+            {"o": {"a": 1, "b": 2}},
+            {"o": {"b": 2, "a": 1}},
+            {"o": {"a": 1, "b": 2}},
+        ]:
+            assert receiver.to_value(sender.to_binary(doc)) == doc
+
+    def test_reset_after_losing_a_new_name(self) -> None:
+        sender, receiver = pair()
+        receiver.to_value(sender.to_binary({"a": 1}))
+        sender.to_binary({"a": 2, "new": "x"})  # lost: it defined "new" inline
+        sender.reset_stream()
+        doc = {"a": 3, "new": "y"}
+        assert receiver.to_value(sender.to_binary(doc)) == doc
+
+    def test_receiver_restart_recovers_after_reset(self) -> None:
+        sender, receiver = pair()
+        receiver.to_value(sender.to_binary({"a": 1, "b": "https://example.com/x"}))
+        restarted = SJSON(sender_id=8)
+        sender.reset_stream()
+        doc = {"a": 2, "b": "https://example.com/x"}
+        assert restarted.to_value(sender.to_binary(doc)) == doc
+
+    def test_prefix_delta_with_url_suffix(self) -> None:
+        sender, receiver = pair()
+        for value in ["prefix-old-value", "prefix-https://example.com/path"]:
+            assert receiver.to_value(sender.to_binary({"v": value})) == {"v": value}

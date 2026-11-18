@@ -174,9 +174,8 @@ class StringNode(Node):
             any(c.isupper() for c in value) and any(c.islower() for c in value)
         ):
             return cls._uuid_to_binary(value)
-        if cls._is_url(value):
-            if values is None or tag_dictionary is None:
-                raise KeyError("Cannot encode a URL without a tag dictionary.")
+        if cls._is_url(value) and values is not None and tag_dictionary is not None:
+            # Without a dictionary a URL is encoded like any other string.
             # Intern a URL the second time it is seen: most URLs are never
             # repeated, and interning costs a dictionary update (or, in stream
             # mode, an inline definition).
