@@ -160,8 +160,13 @@ class TagDictionary:
             raise ValueError("A compiled dictionary must be an object or a list")
         if data.get("format", cls.FILE_FORMAT) != cls.FILE_FORMAT:
             raise ValueError(f"Not an SJSON dictionary: {data.get('format')!r}")
-        if data.get("version", cls.FILE_VERSION) > cls.FILE_VERSION:
-            raise ValueError(f"Unsupported dictionary version: {data['version']}")
+        version = data.get("version", cls.FILE_VERSION)
+        if (
+            not isinstance(version, int)
+            or isinstance(version, bool)
+            or not 1 <= version <= cls.FILE_VERSION
+        ):
+            raise ValueError(f"Unsupported dictionary version: {version!r}")
         tags, values = data.get("tags", []), data.get("values", [])
         for entries in (tags, values):
             if not isinstance(entries, list) or not all(
