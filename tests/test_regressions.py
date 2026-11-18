@@ -208,3 +208,21 @@ class TestHostileInput:
         bits = self._string_bits(StringNode.SPECIAL_HANDLING_LZ4, payload)
         with pytest.raises(ValueError):
             Node.from_bits(bits)
+
+
+class TestManyFieldNames:
+    """Tag ids 256-4095 start with 110, the old 3-bit end-of-object marker."""
+
+    @pytest.mark.parametrize("count", [255, 256, 300, 4095, 4096, 5000])
+    def test_objects_with_many_distinct_names(self, count: int) -> None:
+        document = {f"k{i}": i for i in range(count)}
+        _, value = round_trip(document)
+        assert value == document
+
+    def test_nested_objects_past_256_names(self) -> None:
+        document = {
+            f"group{g}": {f"field{g}_{i}": [i, {"x": None}] for i in range(40)}
+            for g in range(10)
+        }
+        _, value = round_trip(document)
+        assert value == document

@@ -29,7 +29,15 @@ class ObjectNode(Node):
     Represents an object/dictionary of named properties, which can be converted
     into a stream of bits, or converts a stream of bits into a dictionary of
     named properties.
+
+    Members are written as (NybbleField tag id + value) pairs and the object
+    ends with tag id 0 (``00000``), which is never assigned to a name. (A
+    3-bit end marker cannot be used here: it would be confused with the
+    leading bits of a tag id between 256 and 4095.)
     """
+
+    # NybbleField encoding of tag id 0.
+    END_OF_MEMBERS: str = "00000"
 
     def __init__(
         self,
@@ -79,9 +87,9 @@ class ObjectNode(Node):
             tag_dictionary: The tag dictionary to use for name compression.
 
         Returns:
-            BitArray: Binary data starting with '101' type code, followed by:
-                     - 32-bit property count
-                     - For each property: name index (1-2 bytes) + node binary data
+            BitArray: Binary data starting with '101' type code, followed by
+                     (NybbleField tag id + node binary data) per property and
+                     a terminating tag id 0.
         """
         if tag_dictionary is None:
             raise ValueError("tag_dictionary cannot be None")
@@ -94,7 +102,7 @@ class ObjectNode(Node):
             named_nodes.append(new_node)
             bits.append(new_node.to_binary(tag_dictionary))
 
-        bits.append(BitArray(bin=Node.END_OF_OBJECT))
+        bits.append(BitArray(bin=self.END_OF_MEMBERS))
         return bits
 
     def to_value(
@@ -116,9 +124,9 @@ class ObjectNode(Node):
         if reader.peek_bin(3) != self.get_binary_code():
             raise ValueError("Invalid object type code")
         reader.read_uint(3)
-        while reader.peek_bin(3) != Node.END_OF_OBJECT:
+        while reader.peek_bin(5) != self.END_OF_MEMBERS:
             named_nodes.append(NamedNode(bits=reader, tag_dictionary=tag_dictionary))
-        reader.read_uint(3)
+        reader.read_uint(5)
         reader.finish(bits, owned)
         for node in named_nodes:
             self.objects[node.get_name()] = node.get_value()

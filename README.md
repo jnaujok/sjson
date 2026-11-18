@@ -134,7 +134,7 @@ schema order, which can differ from the order in the original document.
 The sample order in the tests goes from 254 bytes of JSON to 89 bytes tagged
 and 71 bytes schema-encoded (packet header and CRC included).
 
-## Wire format (0.6)
+## Wire format (0.7)
 
 All variable-length integers use a **NybbleField**: a unary prefix that says how
 many nybbles follow.
@@ -155,7 +155,7 @@ many nybbles follow.
 | field | description |
 |:------|:------------|
 | 16 bits | sender identifier |
-| 4 bits | packet version (currently 2); peers reject versions they do not know |
+| 4 bits | packet version (currently 3); peers reject versions they do not know |
 | 3 bits | flags; bit 0: a schema fingerprint follows; bit 1: the data uses the schema-driven encoding |
 | 32 bits | schema fingerprint, only when flagged |
 | NybbleField | length of the encoded data in bits |
@@ -192,7 +192,7 @@ Every value starts with a 3-bit type code.
 | 010 | number | see below |
 | 011 | string | see below |
 | 100 | array | the items, then `110` |
-| 101 | object | (NybbleField tag id + value) per member, then `110` |
+| 101 | object | (NybbleField tag id + value) per member, then tag id 0 (`00000`) |
 | 110 | end of array / object | none |
 | 111 | reserved | |
 
