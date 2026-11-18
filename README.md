@@ -41,7 +41,11 @@ except KeyError:  # the receiver has not seen these field names yet: NAK
 Each receiver keeps a dictionary per sender. A receiver that meets a name it
 does not know NAKs with the highest id it knows and gets only the missing
 entries back; with a shared schema or compiled dictionary (below) that rarely
-or never happens, and stream mode defines new names inline.
+or never happens, and stream mode defines new names inline. The dictionary an
+instance sends with is `own_dictionary`, kept apart from the ones it learns
+from peers (`get_dictionary(sender_id)`), so nothing a peer sends can change
+it. An instance does not decode its own packets with it: like any receiver, it
+learns the names through a NAK.
 
 [`examples/acknak.py`](examples/acknak.py) wraps all of this in an ACK/NAK
 link over a socket or any byte stream: it frames packets, fetches missing
@@ -279,6 +283,26 @@ same documents (within 1% where the zstd and LZ4 library versions differ) and
 is 12 to 150 times faster than this library when encoding and 4 to 280 times
 faster when decoding: on the UCI stream, about 0.1 ms per message stateless
 and 0.4 to 1 ms in stream mode.
+
+Stateless packets that use a compiled text dictionary keep the digested
+dictionary and their zstd contexts between packets, so each zstd frame takes
+about 9 µs rather than rebuilding level-19 tables from the dictionary every
+time (about 370 µs). Packet sizes are unchanged.
+
+## Known limitations
+
+- **A restarted stateless sender** that keeps its sender id and learns new
+  names again from its base can have its reused ids decoded with the old
+  names by a receiver that remembers them
+  ([#13](https://github.com/jnaujok/sjson/issues/13)). Stream mode is not
+  affected, since its sequence 0 resets both sides. A stateless sender that can
+  restart should take a new sender id each run, or use a compiled dictionary
+  that covers every field.
+- **The ACK/NAK example link** (and IASLib's `CSjsonLink`) writes frames with
+  blocking writes, so two ends that send frames larger than the socket buffers
+  at the same moment can deadlock. SJSON packets are normally far smaller than
+  that; take turns or use one link per direction for very large messages
+  ([IASLib #3](https://github.com/jnaujok/IASLib/issues/3)).
 
 ## Wire format (0.9)
 
