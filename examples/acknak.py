@@ -45,7 +45,11 @@ Frame types:
 
 The link is stop-and-wait: :meth:`send` returns once the message is ACKed.
 Both peers may send; frames for the other direction that arrive while
-waiting are handled and queued for :meth:`receive`.
+waiting are handled and queued for :meth:`receive`. Writes block, so two
+peers that send at the same moment can deadlock if both frames are larger
+than the socket buffers: take turns, or use one link per direction, when
+messages can be that large. A frame longer than ``max_frame`` bytes, or a
+control frame of the wrong size, ends the link with :class:`LinkError`.
 """
 
 from __future__ import annotations
@@ -89,6 +93,7 @@ class AckNakLink:
         timeout: Seconds to wait for an answer before resending; ``None``
             waits forever (a reliable transport never needs to resend).
         retries: Timeouts or NAKs per message before :meth:`send` gives up.
+        max_frame: The longest frame payload accepted, in bytes.
     """
 
     def __init__(
@@ -98,12 +103,14 @@ class AckNakLink:
         peer_id: int = 0,
         timeout: float | None = None,
         retries: int = 3,
+        max_frame: int = 16 * 1024 * 1024,
     ) -> None:
         self.sock = sock
         self.codec = codec
         self.peer_id = peer_id
         self.timeout = timeout
         self.retries = retries
+        self.max_frame = max_frame
         self.inbox: deque[Any] = deque()
         self._number = 0
         self._held: dict[int, BitArray] = {}  # undecodable packets, by number
@@ -126,6 +133,12 @@ class AckNakLink:
         while True:
             if len(self._buffer) >= _FRAME.size:
                 kind, number, length = _FRAME.unpack_from(self._buffer)
+                if length > self.max_frame:
+                    raise LinkError(f"frame too long: {length} bytes")
+                if (kind in (ACK, NAK_RESET, NAK_RESEND) and length) or (
+                    kind == NAK_DICT and length != _NAK_DICT.size
+                ):
+                    raise LinkError("control frame of the wrong size")
                 end = _FRAME.size + length
                 if len(self._buffer) >= end:
                     payload = bytes(self._buffer[_FRAME.size : end])

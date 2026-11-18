@@ -141,7 +141,7 @@ class TestFraming:
     def test_frame_split_across_a_timeout(self) -> None:
         a, b = socket.socketpair()
         link = acknak.AckNakLink(b, SJSON())
-        frame = acknak._FRAME.pack(acknak.ACK, 7, 3) + b"xyz"
+        frame = acknak._FRAME.pack(acknak.DATA, 7, 3) + b"xyz"
         a.sendall(frame[:4])
         with pytest.raises(socket.timeout):
             link._read(0.05)
@@ -149,5 +149,17 @@ class TestFraming:
         with pytest.raises(socket.timeout):  # stalls mid-payload
             link._read(0.05)
         a.sendall(frame[9:] + frame)
-        assert link._read(1) == (acknak.ACK, 7, b"xyz")
-        assert link._read(1) == (acknak.ACK, 7, b"xyz")
+        assert link._read(1) == (acknak.DATA, 7, b"xyz")
+        assert link._read(1) == (acknak.DATA, 7, b"xyz")
+
+    def test_oversized_and_malformed_frames_end_the_link(self) -> None:
+        a, b = socket.socketpair()
+        link = acknak.AckNakLink(b, SJSON(), max_frame=1024)
+        a.sendall(acknak._FRAME.pack(acknak.DATA, 0, 0x7FFFFFFF))
+        with pytest.raises(acknak.LinkError, match="too long"):
+            link._read(1)
+        a2, b2 = socket.socketpair()
+        other = acknak.AckNakLink(b2, SJSON())
+        a2.sendall(acknak._FRAME.pack(acknak.ACK, 0, 1) + b"x")
+        with pytest.raises(acknak.LinkError, match="wrong size"):
+            other._read(1)
