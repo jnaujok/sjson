@@ -117,6 +117,6 @@ class TestSchemaPreloadedSJSON:
 
     def test_bad_version(self) -> None:
         packet = SJSON().to_binary({"a": 1})
-        packet.overwrite("0b1111", 16)
+        packet.overwrite("0b1111", 0)
         with pytest.raises(ValueError):
             SJSON().to_value(packet)

@@ -139,8 +139,8 @@ class TestInternedBeforeSpecialForms:
 class TestPacketVersion:
     def test_older_versions_are_rejected(self) -> None:
         packet = SJSON().to_binary({"a": "https://example.com/"})
-        assert SJSON.read_header(packet).version == SJSON.VERSION == 4
-        packet.overwrite("0b0001", 16)
+        assert SJSON.read_header(packet).version == SJSON.VERSION == 5
+        packet.overwrite("0b0100", 0)
         try:
             SJSON().to_value(packet)
         except ValueError as error:

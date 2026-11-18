@@ -41,6 +41,18 @@ def _text_channel(
     return None
 
 
+def _text_parameters(level: int, window_log: int) -> Any:
+    """zstd parameters for a stream's text channel: the level's own, with the
+    window (and the match tables that grow with it) limited to 2**window_log."""
+    base = zstandard.ZstdCompressionParameters.from_level(level)
+    return zstandard.ZstdCompressionParameters.from_level(
+        level,
+        window_log=min(base.window_log, window_log),
+        hash_log=min(base.hash_log, window_log + 1),
+        chain_log=min(base.chain_log, window_log + 1),
+    )
+
+
 def _zstd_dictionary(dictionary: TagDictionary) -> Any:
     if dictionary.text_dictionary is None:
         return None
@@ -75,6 +87,11 @@ class PacketHeader:
     cache_width: int | None = None
 
     @property
+    def sender_present(self) -> bool:
+        """Whether the packet carries its sender id."""
+        return bool(self.flags & SJSON.FLAG_SENDER)
+
+    @property
     def message_length(self) -> int:
         """Header plus data, in bits (the CRC is not included)."""
         return self.header_length + self.data_length
@@ -105,13 +122,20 @@ class SJSON:
     #   2 - interned value dictionary (0.4) and schema-driven encoding (0.5)
     #   3 - objects end with tag id 0 instead of the 3-bit end marker (0.7)
     #   4 - stream mode: flag bit 2, sequence number and cache width (0.8)
-    VERSION: int = 4
+    #   5 - the version leads the packet and the sender id is optional
+    #       (flag bit 3); stream mode omits it by default (0.9)
+    VERSION: int = 5
     VERSION_BITS: int = 4
-    FLAG_BITS: int = 3
+    FLAG_BITS: int = 4
     FLAG_SCHEMA: int = 0b001
     FLAG_SCHEMA_ENCODED: int = 0b010
-    FLAG_STATEFUL: int = 0b100
+    FLAG_STATEFUL: int = 0b0100
+    FLAG_SENDER: int = 0b1000
     TEXT_LEVEL: int = 19
+    # zstd window for the text channel: 128 KiB keeps a level-19 stream
+    # context near 3 MB (the 8 MiB default needs ~90 MB) and compresses the
+    # benchmark streams identically.
+    TEXT_WINDOW_LOG: int = 17
     SEQUENCE_BITS: int = 8
     CACHE_WIDTH_BITS: int = 3
 
@@ -123,6 +147,7 @@ class SJSON:
         dictionary: Any = None,
         stateful: bool = False,
         cache_width: int = 3,
+        include_sender_id: bool | None = None,
         **schema_options: Any,
     ) -> None:
         """
@@ -130,7 +155,9 @@ class SJSON:
             schema: Optional schema for this sender: a JSON Schema or XSD path,
                 a parsed JSON Schema ``dict`` or a ``SchemaModel``. It is also
                 registered for decoding.
-            sender_id: This sender's 16-bit id (random if not given).
+            sender_id: This sender's 16-bit id (random if not given). It
+                names this sender to receivers that hear several senders,
+                such as a broadcast network.
             schema_encoding: With a schema, encode documents that match it
                 using the schema-driven encoding (no field tags or type codes).
                 Documents that do not match fall back to the tagged encoding.
@@ -147,6 +174,11 @@ class SJSON:
                 ``StreamGapError`` until the sender calls ``reset_stream()``.
             cache_width: Stream mode only: each field remembers
                 ``2**cache_width`` recent values.
+            include_sender_id: Put the sender id in every packet. Defaults to
+                True for stateless packets and False in stream mode, where a
+                connection (TCP, a WebSocket, a serial line) already has a
+                single sender. Receivers attribute packets without one to the
+                ``sender_id`` passed to :meth:`to_value` (0 by default).
             schema_options: Options for the XSD loader.
         """
         self.sender_dictionaries: dict[int, TagDictionary] = {}
@@ -155,6 +187,9 @@ class SJSON:
         self.schema_encoding = schema_encoding
         self._codecs: dict[int, SchemaCodec] = {}
         self.stateful = stateful
+        self.include_sender_id = (
+            not stateful if include_sender_id is None else include_sender_id
+        )
         self.cache_width = cache_width
         self._stream: StreamState | None = (
             StreamState(cache_width) if stateful else None
@@ -169,7 +204,9 @@ class SJSON:
         # Receiving side: per sender, its stream state and the next sequence.
         self._streams: dict[int, tuple[StreamState, int]] = {}
         # TODO: Get the sender id from the config file
-        self.sender_id = randint(0, 0xFFFF) if sender_id is None else sender_id
+        # A random id is never 0: 0 is the default a receiver gives packets
+        # that carry no sender id.
+        self.sender_id = randint(1, 0xFFFF) if sender_id is None else sender_id
         if not 0 <= self.sender_id <= 0xFFFF:
             raise ValueError("sender_id must fit in 16 bits")
         if schema is not None and dictionary is not None:
@@ -242,14 +279,19 @@ class SJSON:
         return self._register(self._as_dictionary(dictionary))
 
     @classmethod
-    def read_header(cls, bits: BitArray) -> PacketHeader:
-        """Parse the packet header from the start of ``bits``."""
+    def read_header(cls, bits: BitArray, sender_id: int = 0) -> PacketHeader:
+        """
+        Parse the packet header from the start of ``bits``. A packet without
+        a sender id is attributed to ``sender_id``.
+        """
         reader = BitReader(bits[0 : min(128, len(bits))])
-        sender_id = reader.read_uint(16)
         version = reader.read_uint(cls.VERSION_BITS)
         if version != cls.VERSION:
             raise ValueError(f"Unsupported packet version: {version}")
         flags = reader.read_uint(cls.FLAG_BITS)
+        present = bool(flags & cls.FLAG_SENDER)
+        if present:
+            sender_id = reader.read_uint(16)
         sequence = cache_width = None
         if flags & cls.FLAG_STATEFUL:
             sequence = reader.read_uint(cls.SEQUENCE_BITS)
@@ -268,7 +310,9 @@ class SJSON:
         )
 
     @classmethod
-    def get_sender_id_and_length(cls, bits: BitArray) -> tuple[int, int]:
+    def get_sender_id_and_length(
+        cls, bits: BitArray, sender_id: int = 0
+    ) -> tuple[int, int]:
         """
         Given at least the first 16 bytes of the bitstream, extract the sender
         ID and the length of the message.
@@ -277,10 +321,11 @@ class SJSON:
             bits (BitArray): The raw bitstream being decoded.
 
         Returns:
-            tuple[int, int]: The sender ID and the length of the message in bits,
-                header included and the trailing 32-bit CRC excluded.
+            tuple[int, int]: The sender ID (``sender_id`` when the packet has
+                none) and the length of the message in bits, header included
+                and the trailing 32-bit CRC excluded.
         """
-        header = cls.read_header(bits)
+        header = cls.read_header(bits, sender_id)
         return header.sender_id, header.message_length
 
     def to_binary(self, json_object: Any) -> BitArray:
@@ -289,10 +334,12 @@ class SJSON:
 
         | field | description |
         |:------|:------------|
-        | 16 bits | sender id |
         | 4 bits | packet version |
-        | 3 bits | flags (bit 0: a schema fingerprint follows, bit 1: the data |
-        |        | uses the schema-driven encoding) |
+        | 4 bits | flags (bit 0: a schema fingerprint follows, bit 1: the data |
+        |        | uses the schema-driven encoding, bit 2: stream mode, |
+        |        | bit 3: a sender id follows) |
+        | 16 bits | sender id, only if flagged |
+        | 8 + 3 bits | stream mode only: sequence number and cache width |
         | 32 bits | schema fingerprint, only if flagged |
         | NybbleField | data length in bits |
         | ... | data |
@@ -347,9 +394,7 @@ class SJSON:
         finally:
             dictionary.set_stream(None)
             dictionary.text = None
-        ret_val = BitArray(uint=self.sender_id, length=16) + BitArray(
-            uint=self.VERSION, length=self.VERSION_BITS
-        )
+        ret_val = BitArray(uint=self.VERSION, length=self.VERSION_BITS)
         # In stream mode only the first packet (sequence 0) names the
         # dictionary; later packets use whatever that packet established.
         send_fingerprint = dictionary.fingerprint is not None and (
@@ -357,7 +402,11 @@ class SJSON:
         )
         if send_fingerprint:
             flags |= self.FLAG_SCHEMA
+        if self.include_sender_id:
+            flags |= self.FLAG_SENDER
         ret_val.append(BitArray(uint=flags, length=self.FLAG_BITS))
+        if self.include_sender_id:
+            ret_val.append(BitArray(uint=self.sender_id, length=16))
         if stream is not None:
             ret_val.append(BitArray(uint=self._sequence, length=self.SEQUENCE_BITS))
             ret_val.append(
@@ -373,7 +422,7 @@ class SJSON:
         ret_val += BitArray(uint=val, length=32)
         return ret_val
 
-    def to_value(self, bits: BitArray) -> Any:
+    def to_value(self, bits: BitArray, sender_id: int = 0) -> Any:
         """
         This method decodes a raw bitstream into the JSON object it represents.
         The input is not modified, and may carry trailing padding (for example
@@ -382,6 +431,8 @@ class SJSON:
 
         Args:
             bits (BitArray): The raw bitstream to decode.
+            sender_id (int): The sender a packet without a sender id is
+                attributed to, for example one id per connection.
 
         Raises:
             ValueError: If the CRC does not match.
@@ -390,7 +441,17 @@ class SJSON:
         Returns:
             Any: The decoded JSON object.
         """
-        header = self.read_header(bits)
+        header = self.read_header(bits, sender_id)
+        if header.sender_id == self.sender_id and (
+            not header.sender_present or header.sequence is not None
+        ):
+            # A peer's packets filed under our own id would mix its names
+            # into our sending dictionary, and a stream packet of our own (a
+            # broadcast heard back) would reset it.
+            raise ValueError(
+                f"Packet attributed to sender {header.sender_id}, this endpoint's "
+                "own id: pass another sender_id for the link"
+            )
         message_length = header.message_length
         if len(bits) < message_length + 32:
             raise ValueError("Truncated message")
@@ -442,12 +503,17 @@ class SJSON:
             return b""
         zdict = _zstd_dictionary(dictionary)
         if stream is None:  # one self-contained frame per packet
+            # zstd sizes a one-shot frame's window and tables to the text,
+            # so no window limit is needed here.
             return zstandard.ZstdCompressor(
                 level=self.TEXT_LEVEL, dict_data=zdict, write_checksum=False
             ).compress(text)
         if self._text is None:
             self._text = zstandard.ZstdCompressor(
-                level=self.TEXT_LEVEL, dict_data=zdict
+                compression_params=_text_parameters(
+                    self.TEXT_LEVEL, self.TEXT_WINDOW_LOG
+                ),
+                dict_data=zdict,
             ).compressobj()
         return self._text.compress(text) + self._text.flush(
             zstandard.COMPRESSOBJ_FLUSH_BLOCK
@@ -553,6 +619,11 @@ class SJSON:
         has never seen this sender before, both are zero and the whole
         dictionary is sent.
 
+        An endpoint that leaves its sender id out of its packets answers every
+        NAK with its own dictionary, under the id the peer asked with (the peer
+        cannot know our real id). Such an endpoint therefore cannot relay
+        another sender's dictionary; use ``include_sender_id=True`` for that.
+
         Args:
             sender_id (int): The sender whose dictionary is requested.
             last_tag_id (int): The highest numbered tag the receiver knows.
@@ -571,7 +642,13 @@ class SJSON:
         """
         tags: list[tuple[int, str]] = []
         values: list[tuple[int, str]] = []
-        dictionary = self.sender_dictionaries.get(sender_id)
+        if self.include_sender_id:
+            dictionary = self.sender_dictionaries.get(sender_id)
+        else:
+            # Our packets carry no sender id, so the peer asks under whatever
+            # id it gave this link (which may be the id we give the peer's
+            # own packets): always answer with our own dictionary.
+            dictionary = self.sender_dictionaries.get(self.sender_id)
         if dictionary is not None:
             tags = dictionary.get_tags(last_tag_id)
             if dictionary.values is not None:

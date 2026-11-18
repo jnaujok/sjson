@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from sjson.compile import compile_dictionary, main
+from sjson.compile import compile_dictionary, default_output, main
 from sjson.schema import load_schema
 from sjson.sjson import SJSON, UnknownSchemaError
 from sjson.tag_dictionary import TagDictionary
@@ -126,7 +126,7 @@ class TestCompile:
         samples.write_text('{"a": "x"}\n{"a": "x", "b": 1}\n\n')
         listed = tmp_path / "l.json"
         listed.write_text('[{"c": 1}, {"c": 2}]')
-        out = tmp_path / "d.json"
+        out = tmp_path / "d.sdj"
         assert (
             main(
                 [
@@ -153,11 +153,23 @@ class TestCompile:
         assert main(["--schema", str(FIXTURES / "missing.json"), "-o", str(out)]) == 1
         with pytest.raises(SystemExit):
             main(["-o", str(out)])
+        with pytest.raises(SystemExit):  # samples only: no name to derive
+            main(["--sample", str(samples)])
+
+    def test_default_output_name(self, tmp_path: Path) -> None:
+        assert default_output("a/order.schema.json") == "a/order.sdj"
+        assert default_output("Order.XSD") == "Order.sdj"
+        assert default_output("types.json") == "types.sdj"
+        for fixture in FIXTURES.glob("*.json"):  # the schema $refs its peers
+            (tmp_path / fixture.name).write_text(fixture.read_text())
+        schema = tmp_path / "order.schema.json"
+        assert main(["--schema", str(schema)]) == 0
+        assert TagDictionary.load(tmp_path / "order.sdj").schema is not None
 
 
 class TestSJSONWithCompiledDictionary:
     def test_schema_file_and_compiled_file_interoperate(self, tmp_path: Path) -> None:
-        path = tmp_path / "order.dict.json"
+        path = tmp_path / "order.sdj"
         compile_dictionary(ORDER_JSON).save(path)
         by_schema = SJSON(schema=ORDER_JSON)
         by_dictionary = SJSON(dictionary=path)
@@ -178,7 +190,7 @@ class TestSJSONWithCompiledDictionary:
         receiver.register_dictionary(dictionary.to_dict())
         packet = sender.to_binary(ORDER)
         header = SJSON.read_header(packet)
-        assert header.flags == SJSON.FLAG_SCHEMA
+        assert header.flags == SJSON.FLAG_SCHEMA | SJSON.FLAG_SENDER
         assert receiver.to_value(packet) == ORDER
         # Everything was pre-loaded, so the first packet needed no NAK.
         sid = sender.get_sender_id()

@@ -1,19 +1,56 @@
 # Streaming JSON Library
 
-[![Python Version](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![CI](https://github.com/jnaujok/sjson/actions/workflows/python-package.yml/badge.svg)](https://github.com/jnaujok/sjson/actions/workflows/python-package.yml)
+[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg?logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![PyPI Version](https://img.shields.io/pypi/v/sjson.svg)](https://pypi.org/project/sjson/)
-[![Poetry](https://img.shields.io/badge/poetry-managed-blue.svg)](https://python-poetry.org/)
 [![License: LGPL-2.1](https://img.shields.io/badge/License-LGPL--2.1-blue.svg)](https://opensource.org/licenses/LGPL-2.1)
+[![Poetry](https://img.shields.io/badge/poetry-managed-blue.svg?logo=poetry&logoColor=white)](https://python-poetry.org/)
+[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+[![Linting: flake8](https://img.shields.io/badge/linting-flake8-yellowgreen.svg)](https://flake8.pycqa.org/)
+[![Tests](https://img.shields.io/badge/tests-236%20passing-brightgreen.svg)](tests)
+[![Wire format](https://img.shields.io/badge/wire%20format-v5-informational.svg)](#wire-format-09)
+[![Schemas](https://img.shields.io/badge/schemas-JSON%20Schema%20%7C%20XSD-8A2BE2.svg)](#preloading-the-dictionary-from-a-schema)
+[![Compression](https://img.shields.io/badge/text%20channel-zstd%20%2B%20LZ4-orange.svg)](#stream-mode)
+[![UCI vs XML](https://img.shields.io/badge/UCI%20vs%20XML-26x%20smaller-success.svg)](#compression-comparison)
+[![C++ port](https://img.shields.io/badge/C%2B%2B%20port-IASLib-00599C.svg?logo=cplusplus&logoColor=white)](https://github.com/jnaujok/IASLib)
+[![Last commit](https://img.shields.io/github/last-commit/jnaujok/sjson.svg)](https://github.com/jnaujok/sjson/commits)
+[![Code size](https://img.shields.io/github/languages/code-size/jnaujok/sjson.svg)](https://github.com/jnaujok/sjson)
+[![Issues](https://img.shields.io/github/issues/jnaujok/sjson.svg)](https://github.com/jnaujok/sjson/issues)
 
-This library is meant to compress JSON into a binary representation that is likely as compressed as possible without prior knowledge of the library.
+SJSON compresses JSON into a compact bitstream: field names become small
+dictionary ids, numbers and strings get tight encodings, a JSON Schema or XSD
+can pre-load the dictionary (and drop field tags altogether), and stream mode
+remembers recent values so repeats and small changes cost a few bits. Every
+document comes back exactly as it was sent.
 
-## Current State
-Currently still in a pre-alpha state, the library can compress a JSON dictionary into a tight binary representation, with the caveat that currently the dictionary of names is not yet transferred to a listening party.
+## Using it
 
-To truly use this library, there must be an "ACK/NAK" mechanism over the top of it, where the receiver can NAK a message with a request for library fields in return. The library fields will then be sent (LZ4 compressed) to the receiver where they can build a sender dictionary.
+```python
+from sjson import SJSON
 
-Since this is a totally dynamic protocol, each receiver will need a dictionary stored for each sender.
+sender = SJSON(sender_id=1)
+receiver = SJSON()
+packet = sender.to_binary({"name": "alpha", "speed": 12.5})
+try:
+    value = receiver.to_value(packet)
+except KeyError:  # the receiver has not seen these field names yet: NAK
+    receiver.load_dictionary(sender.nak_dictionary(1, receiver.last_known_tag(1)))
+    value = receiver.to_value(packet)
+```
 
+Each receiver keeps a dictionary per sender. A receiver that meets a name it
+does not know NAKs with the highest id it knows and gets only the missing
+entries back; with a shared schema or compiled dictionary (below) that rarely
+or never happens, and stream mode defines new names inline.
+
+[`examples/acknak.py`](examples/acknak.py) wraps all of this in an ACK/NAK
+link over a socket or any byte stream: it frames packets, fetches missing
+names (keeping the packet and retrying it, so it is not sent twice), resets a
+stream after a gap, resends damaged packets and ignores duplicates after a lost
+ACK. `PYTHONPATH=src python examples/acknak_demo.py` runs each case over a
+local socket pair. The C++ port in [IASLib](https://github.com/jnaujok/IASLib)
+has the same link as `CSjsonLink` over any `CStream`, and the two
+interoperate.
 
 ## Preloading the dictionary from a schema
 
@@ -64,18 +101,19 @@ are arrays. The prefixes can be changed with `attribute_prefix` and
 ## Pre-compiled dictionaries
 
 Instead of shipping and parsing the schema on every peer, compile the
-dictionary once and distribute the result, a small JSON file:
+dictionary once and distribute the result, a small `.sdj` (SJSON dictionary)
+file; inside it is JSON:
 
 ```shell
-python -m sjson.compile --schema order.schema.json -o order.dict.json
+python -m sjson.compile --schema order.schema.json     # writes order.sdj
 # or, once installed:
-sjson-compile --schema order.xsd -o order.dict.json
+sjson-compile --schema order.xsd -o order.sdj
 ```
 
 ```python
-sender = SJSON(dictionary="order.dict.json")
+sender = SJSON(dictionary="order.sdj")
 receiver = SJSON()
-receiver.register_dictionary("order.dict.json")
+receiver.register_dictionary("order.sdj")
 ```
 
 The file lists the field names and interned values in id order, plus the
@@ -90,7 +128,7 @@ strings that repeat can be interned:
 
 ```shell
 python -m sjson.compile --schema order.schema.json \
-    --sample traffic.jsonl --intern-min-count 5 -o order.dict.json
+    --sample traffic.jsonl --intern-min-count 5 -o order.sdj
 ```
 
 Samples work without a schema as well. A `.jsonl` file holds one document per
@@ -151,12 +189,21 @@ sender = SJSON(schema="order.schema.json", stateful=True)
   as a signed difference, other strings as a shared prefix plus a new suffix.
   The encoder always picks the shortest form, and values stay exact.
 - Longer strings travel in a text channel: one zstd block per packet whose
-  compression context lasts for the whole stream.
+  compression context lasts for the whole stream. The window is 128 KiB
+  (`SJSON.TEXT_WINDOW_LOG = 17`), so a level-19 context takes about 3 MB per
+  stream instead of the 90 MB zstd uses by default, with the same compression
+  on every benchmark stream.
 - New field names are defined inline, so a receiver never needs a NAK.
 - Each packet carries an 8-bit sequence number. A receiver that misses a packet
   raises `StreamGapError`; the sender calls `reset_stream()` and the next
   packet (sequence 0) starts both sides afresh. Only that first packet carries
   the schema fingerprint.
+- Stream packets leave out the 16-bit sender id: a TCP or WebSocket connection
+  has a single sender. A receiver handling several connections passes one id
+  per connection, `receiver.to_value(packet, sender_id=connection_id)`, and
+  NAKs under that id. `SJSON(..., include_sender_id=True)` puts it back for a
+  shared medium; stateless packets carry it by default, since they are meant
+  for broadcast networks.
 
 Opt-in: `compile_dictionary(..., text_dictionary_size=16384)` (or
 `--text-dictionary-size 16384`) also trains a small zstd dictionary on the
@@ -164,12 +211,76 @@ samples' text. It warms the text channel in stream mode and gives
 per-message (non-stream) packets a text channel of their own, but it only
 helps traffic that resembles the samples, so it is off by default.
 
-On a realistic mixed UCI mission stream (six platforms, one sender each),
-stream mode with just the UCI schema and no sample data averages about 90
-bytes per message with smoothly moving kinematics and 118 with random values,
-against 106 and 145 for zstd-19 with a persistent stream context.
+## Compression comparison
 
-## Wire format (0.8)
+Measured with the scripts in [`benchmarks/`](benchmarks) (see its README to
+reproduce). Every SJSON packet is decoded and checked against the original, and
+SJSON sizes include the packet header, CRC and any NAK traffic.
+
+### UCI mission stream
+
+A mixed stream of UCI v2.6 messages (the Open Arsenal public release,
+`uci:version` 006.000) from six platforms over 90 seconds: position and
+navigation reports, system, service and subsystem status, capability status,
+entity tracks, signal reports, task and command status, and operator
+notifications. The first 45 seconds are used only for training where a row
+says so; the table covers the last 45 seconds (1,945 messages). Bytes per
+message, with how many times smaller than XML:
+
+| format | smooth motion | random values |
+|:--|--:|--:|
+| XML (compact) | 2,296 (1.0x) | 2,296 (1.0x) |
+| JSON (minified) | 1,584 (1.4x) | 1,584 (1.4x) |
+| MessagePack | 1,291 (1.8x) | 1,291 (1.8x) |
+| EXI, schema-less | 1,346 (1.7x) | 1,346 (1.7x) |
+| EXI, schema-less, EXI compression | 982 (2.3x) | 982 (2.3x) |
+| JSON + brotli-11, per message | 730 (3.1x) | 731 (3.1x) |
+| EXI + UCI schema, lexical values kept | 537 (4.3x) | 537 (4.3x) |
+| EXI + UCI schema + EXI compression | 391 (5.9x) | 392 (5.9x) |
+| **SJSON + UCI schema, per message** | **370 (6.2x)** | **370 (6.2x)** |
+| EXI + UCI schema (values not kept exactly) | 326 (7.0x) | 326 (7.0x) |
+| SJSON + dictionary compiled from schema and sample traffic, per message | 253 (9.1x) | 253 (9.1x) |
+| XML + zstd-19, one stream context | 109 (21.1x) | 148 (15.5x) |
+| JSON + zstd-19, one stream context | 106 (21.7x) | 145 (15.8x) |
+| JSON + zstd-19 + 64 KB trained dictionary, stream | 93 (24.7x) | 133 (17.3x) |
+| EXI + UCI schema + zstd-19 stream | 93 (24.7x) | 126 (18.2x) |
+| **SJSON stream mode, no setup** | **100 (22.9x)** | **129 (17.9x)** |
+| **SJSON stream mode + UCI schema** | **88.5 (25.9x)** | **116 (19.7x)** |
+| SJSON stream mode + dictionary compiled from schema and samples | 83.8 (27.4x) | 112 (20.5x) |
+
+EXI with a schema keeps values but not their exact text (timestamps lose
+trailing zeros, numbers are rewritten); SJSON always returns the exact
+document. "Smooth motion" moves positions and kinematics a little each
+message, as real tracks do; "random values" redraws every number, the worst
+case for value caching.
+
+### Real-world API streams
+
+Messages from [simdjson-data](https://github.com/simdjson/simdjson-data), sent
+one after another over one stream, with no schema (bytes per message):
+
+| stream | JSON | zstd-19 stream | brotli stream | SJSON stream mode |
+|:--|--:|--:|--:|--:|
+| Twitter statuses | 4,555 | 411 | 396 | 439 |
+| GitHub events | 1,764 | 370 | 345 | 420 |
+| Amazon products | 448 | 83 | 94 | 102 |
+| Semantic Scholar papers | 1,719 | 639 | 606 | 686 |
+
+Without a schema, on free text, a general-purpose stream compressor is 5 to
+20% smaller. SJSON's strengths are elsewhere: packets that decode on their
+own, schemas, exact values, and structured traffic like UCI.
+
+### Memory and speed
+
+A stream-mode endpoint holds one zstd context of about 3 MB (128 KiB window)
+plus its value caches. The C++ port in
+[IASLib](https://github.com/jnaujok/IASLib) produces the same bytes from the
+same documents (within 1% where the zstd and LZ4 library versions differ) and
+is 12 to 150 times faster than this library when encoding and 4 to 280 times
+faster when decoding: on the UCI stream, about 0.1 ms per message stateless
+and 0.4 to 1 ms in stream mode.
+
+## Wire format (0.9)
 
 All variable-length integers use a **NybbleField**: a unary prefix that says how
 many nybbles follow.
@@ -189,9 +300,9 @@ many nybbles follow.
 
 | field | description |
 |:------|:------------|
-| 16 bits | sender identifier |
-| 4 bits | packet version (currently 4); peers reject versions they do not know |
-| 3 bits | flags; bit 0: a schema fingerprint follows; bit 1: the data uses the schema-driven encoding; bit 2: stream mode |
+| 4 bits | packet version (currently 5); peers reject versions they do not know |
+| 4 bits | flags; bit 0: a schema fingerprint follows; bit 1: the data uses the schema-driven encoding; bit 2: stream mode; bit 3: a sender id follows |
+| 16 bits | sender identifier, only when flagged (stateless packets by default) |
 | 8 + 3 bits | stream mode only: sequence number and cache width |
 | 32 bits | schema fingerprint, only when flagged |
 | NybbleField | length of the encoded data in bits |

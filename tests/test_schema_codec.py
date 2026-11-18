@@ -335,7 +335,7 @@ class TestFuzz:
         for _ in range(300):
             document = self._document(rng)
             packet = sender.to_binary(document)
-            modes.add(SJSON.read_header(packet).flags)
+            modes.add(SJSON.read_header(packet).flags & ~SJSON.FLAG_SENDER)
             receiver.load_dictionary(
                 sender.nak_dictionary(
                     sid, receiver.last_known_tag(sid), receiver.last_known_value(sid)
