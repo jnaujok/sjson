@@ -279,9 +279,8 @@ class AckNakLink:
             message = str(error)
             damaged = "CRC" in message or "Truncated" in message
             stream = SJSON.FLAG_STATEFUL & _flags(packet)
-            if "version" in message or "own id" in message:
-                # Resending cannot help: a version we do not speak, or a
-                # link id that is our own.
+            if "version" in message:
+                # Resending cannot help: a version we do not speak.
                 self._write(NAK_FATAL, number, message.encode("utf-8"))
             elif stream and not damaged:
                 # The packet is intact but our stream state does not fit it

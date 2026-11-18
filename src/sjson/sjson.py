@@ -212,6 +212,11 @@ class SJSON:
                 ``sender_id`` passed to :meth:`to_value` (0 by default).
             schema_options: Options for the XSD loader.
         """
+        # What this endpoint sends with, kept apart from what it learns from
+        # peers, so no packet or NAK reply from a peer can change it,
+        # whatever id it carries.
+        self.own_dictionary = TagDictionary()
+        # What this endpoint has learnt from each peer, by sender id.
         self.sender_dictionaries: dict[int, TagDictionary] = {}
         # Pre-loaded dictionaries this instance can decode, by fingerprint.
         self.known_dictionaries: dict[int, TagDictionary] = {}
@@ -249,7 +254,7 @@ class SJSON:
             own = self._as_dictionary(dictionary)
         if own is not None:
             self._register(own)
-            self.sender_dictionaries[self.sender_id] = own.fresh_copy()
+            self.own_dictionary = own.fresh_copy()
 
     @property
     def schemas(self) -> dict[int, Any]:
@@ -280,7 +285,7 @@ class SJSON:
         which tells receivers to do the same, so both sides start again from
         what they share.
         """
-        self.get_dictionary(self.sender_id).reset_to_base()
+        self.own_dictionary.reset_to_base()
         self._stream = StreamState(self.cache_width) if self.stateful else None
         self._sequence = 0
         self._text = None
@@ -382,7 +387,7 @@ class SJSON:
         Returns:
             BitArray: The encoded bitstream
         """
-        dictionary = self.get_dictionary(self.sender_id)
+        dictionary = self.own_dictionary
         stream = self._stream
         flags = self.FLAG_STATEFUL if stream is not None else 0
         dictionary.set_stream(stream)
@@ -473,16 +478,6 @@ class SJSON:
             Any: The decoded JSON object.
         """
         header = self.read_header(bits, sender_id)
-        if header.sender_id == self.sender_id and (
-            not header.sender_present or header.sequence is not None
-        ):
-            # A peer's packets filed under our own id would mix its names
-            # into our sending dictionary, and a stream packet of our own (a
-            # broadcast heard back) would reset it.
-            raise ValueError(
-                f"Packet attributed to sender {header.sender_id}, this endpoint's "
-                "own id: pass another sender_id for the link"
-            )
         message_length = header.message_length
         if len(bits) < message_length + 32:
             raise ValueError("Truncated message")
@@ -624,9 +619,9 @@ class SJSON:
 
     def get_dictionary(self, sender_id: int) -> TagDictionary:
         """
-        Given a sender ID, this method returns the associated dictionary of tags.
-        If the sender ID is not in the known set of senders, adds a new dictionary
-        assigned to that sender and returns the empty dictionary.
+        The dictionary learnt from a peer, by its sender id (a new, empty one
+        for a sender not seen before). This endpoint's own sending dictionary
+        is :attr:`own_dictionary`, which no peer can reach.
 
         Args:
             sender_id (int): The sender ID to look up.
@@ -648,13 +643,12 @@ class SJSON:
         has never seen this sender before, both are zero and the whole
         dictionary is sent.
 
-        An endpoint that leaves its sender id out of its packets answers every
-        NAK with its own dictionary, under the id the peer asked with (the peer
-        cannot know our real id). Such an endpoint therefore cannot relay
-        another sender's dictionary; use ``include_sender_id=True`` for that.
+        The answer is always this endpoint's own names, labelled with
+        ``sender_id``: the id the peer knows us by (without ids on the wire,
+        the id it gave the link).
 
         Args:
-            sender_id (int): The sender whose dictionary is requested.
+            sender_id (int): The id the requesting peer knows us by.
             last_tag_id (int): The highest numbered tag the receiver knows.
             last_value_id (int): The highest numbered interned value the
                 receiver knows.
@@ -669,19 +663,11 @@ class SJSON:
             | NybbleField | Number of interned values being returned |
             | per value | NybbleField value id + NybbleField byte length + UTF-8 |
         """
-        tags: list[tuple[int, str]] = []
+        dictionary = self.own_dictionary
+        tags = dictionary.get_tags(last_tag_id)
         values: list[tuple[int, str]] = []
-        if self.include_sender_id:
-            dictionary = self.sender_dictionaries.get(sender_id)
-        else:
-            # Our packets carry no sender id, so the peer asks under whatever
-            # id it gave this link (which may be the id we give the peer's
-            # own packets): always answer with our own dictionary.
-            dictionary = self.sender_dictionaries.get(self.sender_id)
-        if dictionary is not None:
-            tags = dictionary.get_tags(last_tag_id)
-            if dictionary.values is not None:
-                values = dictionary.values.get_tags(last_value_id)
+        if dictionary.values is not None:
+            values = dictionary.values.get_tags(last_value_id)
 
         ret_val = BitArray(uint=sender_id, length=16)
         for entries in (tags, values):
@@ -696,7 +682,7 @@ class SJSON:
     def load_dictionary(self, ba: BitArray) -> None:
         """
         Loads a dictionary update (the response to a NAK) from a bitstream.
-        Updates describing this instance's own sender ID are ignored.
+        The entries go into the dictionary learnt from that sender.
 
         Args:
             ba (BitArray): The bitstream to load the dictionary from.
@@ -714,7 +700,7 @@ class SJSON:
                 entry_id = NybbleField.to_value(reader)
                 length = NybbleField.to_value(reader)
                 text = reader.read_bytes(length).decode("utf-8")
-                if sender_id == self.get_sender_id() or target is None:
+                if target is None:
                     continue
                 if target.has_tag_id(entry_id):
                     if target.lookup(entry_id) != text:

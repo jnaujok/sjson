@@ -204,10 +204,10 @@ class TestRecovery:
         assert acknak._NAK_DICT.unpack(payload) == (1, 0, 0)
         assert list(link._held) == [0]
 
-    def test_version_or_own_id_is_fatal(self) -> None:
+    def test_unsupported_version_is_fatal(self) -> None:
         a, link = self._pair()
-        link.codec = SJSON(sender_id=1)  # our own id is the link's id
-        packet = SJSON(sender_id=9, stateful=True).to_binary({"a": 1})
+        packet = SJSON(sender_id=9).to_binary({"a": 1})
+        packet.overwrite("0b0001", 0)  # version 1
         link._incoming(acknak.DATA, 0, packet.tobytes())
         assert self._answer(a)[0] == acknak.NAK_FATAL
 

@@ -193,8 +193,7 @@ class TestSJSONWithCompiledDictionary:
         assert header.flags == SJSON.FLAG_SCHEMA | SJSON.FLAG_SENDER
         assert receiver.to_value(packet) == ORDER
         # Everything was pre-loaded, so the first packet needed no NAK.
-        sid = sender.get_sender_id()
-        assert sender.get_dictionary(sid).get_tags(dictionary.base_size) == []
+        assert sender.own_dictionary.get_tags(dictionary.base_size) == []
         with pytest.raises(UnknownSchemaError):
             SJSON().to_value(packet)
 
