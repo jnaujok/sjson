@@ -149,3 +149,62 @@ class TestDecodePerformance:
         value = Node.from_bits(ba, dictionary).get_value()
         assert time.perf_counter() - start < 10
         assert value == document
+
+
+class TestStrictMatching:
+    """Look-alike strings must never be changed by a specialised encoding."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "deadbeef\n",
+            "DEADBEEF\n",
+            "2026-11-18\n",
+            "２０２６-１１-１８",
+            "2026-11-18T10:20:30Z\n",
+            "550e8400-e29b-41d4-a716-446655440000\n",
+            "{550e8400-e29b-41d4-a716-446655440000}",
+            "aGVsbG8gd29ybGQh\n",
+            "١٢٣٤",
+        ],
+    )
+    def test_round_trip_exactly(self, text: str) -> None:
+        _, value = round_trip({"v": text})
+        assert value == {"v": text}
+
+
+class TestHostileInput:
+    def _string_bits(self, code: BitArray, payload: BitArray) -> BitArray:
+        return BitArray(bin=Node.NODE_STRING) + BitArray(bin="1") + code + payload
+
+    def test_zero_width_range_is_rejected(self) -> None:
+        payload = (
+            NybbleField.to_binary(0)  # width
+            + NybbleField.to_binary(2**32 - 1)  # length
+            + NybbleField.to_binary(65)  # base
+        )
+        bits = self._string_bits(StringNode.SPECIAL_HANDLING_RANGE_N, payload)
+        with pytest.raises(ValueError):
+            Node.from_bits(bits)
+
+    def test_range_longer_than_message_is_rejected(self) -> None:
+        payload = NybbleField.to_binary(2**32 - 1) + NybbleField.to_binary(65)
+        bits = self._string_bits(StringNode.SPECIAL_HANDLING_7BIT, payload)
+        with pytest.raises(ValueError):
+            Node.from_bits(bits)
+
+    def test_hex_longer_than_message_is_rejected(self) -> None:
+        payload = BitArray(bin="0") + NybbleField.to_binary(2**32 - 1)
+        bits = self._string_bits(StringNode.SPECIAL_HANDLING_HEX, payload)
+        with pytest.raises(ValueError):
+            Node.from_bits(bits)
+
+    def test_lz4_bomb_is_rejected(self) -> None:
+        payload = (
+            NybbleField.to_binary(2**32 - 1)
+            + NybbleField.to_binary(1)
+            + BitArray(bytes=b"\x00")
+        )
+        bits = self._string_bits(StringNode.SPECIAL_HANDLING_LZ4, payload)
+        with pytest.raises(ValueError):
+            Node.from_bits(bits)

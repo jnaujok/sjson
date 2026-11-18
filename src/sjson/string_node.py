@@ -34,15 +34,16 @@ log: Logger = getLogger(__name__)
 
 
 _UUID_RE = re.compile(
-    r"^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$",
-    re.IGNORECASE,
+    r"(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+    re.IGNORECASE | re.ASCII,
 )
-_HEX_LOWER_RE = re.compile(r"^[0-9a-f]+$")
-_HEX_UPPER_RE = re.compile(r"^[0-9A-F]+$")
-_BASE64_RE = re.compile(r"^[A-Za-z0-9+/]+={0,2}$")
+_HEX_LOWER_RE = re.compile(r"[0-9a-f]+", re.ASCII)
+_HEX_UPPER_RE = re.compile(r"[0-9A-F]+", re.ASCII)
+_BASE64_RE = re.compile(r"[A-Za-z0-9+/]+={0,2}", re.ASCII)
 _DATETIME_RE = re.compile(
-    r"^(\d{4})-(\d{2})-(\d{2})"
-    r"(?:T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})?)?$"
+    r"(\d{4})-(\d{2})-(\d{2})"
+    r"(?:T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})?)?",
+    re.ASCII,
 )
 
 # Bits needed to store the day ordinal of any date from 0001-01-01..9999-12-31.
@@ -155,7 +156,7 @@ class StringNode(Node):
         """Encode a string without its type code."""
         if len(value) == 0:
             return cls.NEEDS_SPECIAL_HANDLING + cls.SPECIAL_HANDLING_EMPTY_STRING
-        if _UUID_RE.match(value) and not (
+        if _UUID_RE.fullmatch(value) and not (
             any(c.isupper() for c in value) and any(c.islower() for c in value)
         ):
             return cls._uuid_to_binary(value)
@@ -325,9 +326,9 @@ class StringNode(Node):
 
     @classmethod
     def _encode_hex(cls, value: str) -> BitArray | None:
-        if _HEX_LOWER_RE.match(value):
+        if _HEX_LOWER_RE.fullmatch(value):
             upper = False
-        elif _HEX_UPPER_RE.match(value):
+        elif _HEX_UPPER_RE.fullmatch(value):
             upper = True
         else:
             return None
@@ -342,7 +343,7 @@ class StringNode(Node):
 
     @classmethod
     def _encode_base64(cls, value: str) -> BitArray | None:
-        if len(value) < 8 or len(value) % 4 != 0 or not _BASE64_RE.match(value):
+        if len(value) < 8 or len(value) % 4 != 0 or not _BASE64_RE.fullmatch(value):
             return None
         try:
             data = base64.b64decode(value, validate=True)
@@ -368,7 +369,7 @@ class StringNode(Node):
           2 bits zone (00 none, 01 Z, 10 offset) and, for an offset,
           1 sign bit + 5 bits hours + 6 bits minutes.
         """
-        match = _DATETIME_RE.match(value)
+        match = _DATETIME_RE.fullmatch(value)
         if match is None:
             return None
         year, month, day, hour, minute, second, fraction, zone = match.groups()
@@ -436,16 +437,26 @@ class StringNode(Node):
     #  Decoders
     ##############################
 
-    @staticmethod
-    def _decode_range(reader: BitReader, width: int) -> str:
+    # Widest range the encoder produces: the whole Unicode code space.
+    MAX_RANGE_WIDTH: int = 21
+
+    @classmethod
+    def _decode_range(cls, reader: BitReader, width: int) -> str:
+        if not 4 <= width <= cls.MAX_RANGE_WIDTH:
+            raise ValueError(f"Invalid range width: {width}")
         length = NybbleField.to_value(reader)
         base = NybbleField.to_value(reader)
+        if length * width > reader.remaining:
+            raise ValueError("Range-coded string is longer than the message")
         return "".join(chr(reader.read_uint(width) + base) for _ in range(length))
 
     @staticmethod
     def _decode_lz4(reader: BitReader) -> str:
         raw_length = NybbleField.to_value(reader)
         packed_length = NybbleField.to_value(reader)
+        # LZ4 cannot expand data by more than 255:1.
+        if raw_length > max(packed_length, 1) * 255:
+            raise ValueError("Invalid LZ4 length")
         packed = reader.read_bytes(packed_length)
         return lz4.block.decompress(packed, uncompressed_size=raw_length).decode(
             "utf-8"
@@ -470,6 +481,8 @@ class StringNode(Node):
     def _decode_hex(reader: BitReader) -> str:
         upper = reader.read_bool()
         length = NybbleField.to_value(reader)
+        if length * 4 > reader.remaining:
+            raise ValueError("Hex string is longer than the message")
         value = "".join(f"{reader.read_uint(4):x}" for _ in range(length))
         return value.upper() if upper else value
 
