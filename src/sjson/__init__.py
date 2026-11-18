@@ -14,7 +14,15 @@
 # License along with this library; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 
-__all__ = [ "Node", "NumberNode", "StringNode", "BooleanNode", "NullNode", "ArrayNode", "ObjectNode",]
+__all__ = [
+    "Node",
+    "NumberNode",
+    "StringNode",
+    "BooleanNode",
+    "NullNode",
+    "ArrayNode",
+    "ObjectNode",
+]
 
 from .node import Node
 from .number_node import NumberNode
@@ -23,4 +31,3 @@ from .boolean_node import BooleanNode
 from .null_node import NullNode
 from .array_node import ArrayNode
 from .object_node import ObjectNode
-

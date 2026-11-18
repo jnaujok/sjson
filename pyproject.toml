@@ -1,6 +1,6 @@
 [project]
 name = "sjson"
-version = "0.1.4"
+version = "0.2.0"
 description = "A streaming JSON library for highly compressed JSON transmission."
 authors = [
     {name = "Jeffrey Naujok",email = "jnaujok@harvestwave.com"}
@@ -32,6 +32,7 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 
 [tool.flake8]
 max_line_length = 88

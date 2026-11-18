@@ -20,6 +20,8 @@ from .node import Node
 from typing import Any, List
 from bitstring import BitArray
 
+from sjson.bit_reader import BitReader
+
 
 class ArrayNode(Node):
     """Represents an array/collection of nodes in SJSON."""
@@ -27,7 +29,7 @@ class ArrayNode(Node):
     def __init__(
         self,
         items: List[Any] | None = None,
-        bits: BitArray | None = None,
+        bits: "BitArray | BitReader | None" = None,
         tag_dictionary: TagDictionary | None = None,
     ) -> None:
         """Initialize an ArrayNode with a list of child nodes.
@@ -71,7 +73,9 @@ class ArrayNode(Node):
         result = BitArray(bin=self.get_binary_code())
         for item in self.items:
             result.append(
-                Node.from_value(item).to_binary(tag_dictionary=tag_dictionary)
+                Node.from_value(item, tag_dictionary).to_binary(
+                    tag_dictionary=tag_dictionary
+                )
             )
         # Add the end of object marker. This saves 13 bis over encoding a length
         # and allows arrays of any size.
@@ -79,7 +83,7 @@ class ArrayNode(Node):
         return result
 
     def to_value(
-        self, bits: BitArray, tag_dictionary: TagDictionary | None = None
+        self, bits: "BitArray | BitReader", tag_dictionary: TagDictionary | None = None
     ) -> Any:
         """Convert the node to its value representation.
 
@@ -91,14 +95,17 @@ class ArrayNode(Node):
             Any: The value representation of the node.
         """
         # Confirm we have an array
+        reader, owned = BitReader.begin(bits)
         items = []
-        if bits.bin[0:3] == self.get_binary_code():
-            # Skip the type
-            del bits[:3]
-            # Get the items.
-            while bits[:3].bin != Node.END_OF_OBJECT:
-                items.append(Node.from_bits(bits, tag_dictionary).get_value())
-            del bits[:3]
+        if reader.peek_bin(3) != self.get_binary_code():
+            raise ValueError("Invalid array type code")
+        # Skip the type
+        reader.read_uint(3)
+        # Get the items.
+        while reader.peek_bin(3) != Node.END_OF_OBJECT:
+            items.append(Node.from_bits(reader, tag_dictionary).get_value())
+        reader.read_uint(3)
+        reader.finish(bits, owned)
         self.items = items
         return items
 

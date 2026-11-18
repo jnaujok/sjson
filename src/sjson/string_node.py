@@ -14,74 +14,113 @@
 # License along with this library; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 
+import base64
+import datetime
 import re
-from typing import Any
 import uuid
-import lz4.frame
+from logging import Logger, getLogger
+from typing import Any, Callable
 
-from sjson.nybble_field import NybbleField
-from sjson.tag_dictionary import TagDictionary  # type: ignore
-from .node import Node
+import lz4.block
 from bitstring import BitArray
 
-from logging import Logger, getLogger
+from sjson.bit_reader import BitReader
+from sjson.nybble_field import NybbleField
+from sjson.tag_dictionary import TagDictionary
+
+from .node import Node
 
 log: Logger = getLogger(__name__)
-log.setLevel("DEBUG")
+
+
+_UUID_RE = re.compile(
+    r"^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$",
+    re.IGNORECASE,
+)
+_HEX_LOWER_RE = re.compile(r"^[0-9a-f]+$")
+_HEX_UPPER_RE = re.compile(r"^[0-9A-F]+$")
+_BASE64_RE = re.compile(r"^[A-Za-z0-9+/]+={0,2}$")
+_DATETIME_RE = re.compile(
+    r"^(\d{4})-(\d{2})-(\d{2})"
+    r"(?:T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})?)?$"
+)
+
+# Bits needed to store the day ordinal of any date from 0001-01-01..9999-12-31.
+_DAY_BITS = 22
+_SECOND_BITS = 17
 
 
 class StringNode(Node):
     """
-    Represents a string value in SJSON, with special handling for UUIDs and
-    LZ4 compression for other strings if it improves compression - flagged with
-    one bit at the start of the string.
+    Represents a string value in SJSON.
+
+    After the type code a single flag bit says whether the string is stored as
+    plain UTF-8 (``0``: NybbleField byte count + bytes) or with special
+    handling (``1``), followed by a 4-bit special-handling code:
+
+    | code | name      | payload                                               |
+    |:----:|:----------|:------------------------------------------------------|
+    | 0000 | UUID      | hyphen bit + upper-case bit + 128 bits                |
+    | 0001 | URL       | NybbleField tag id (interned in the tag dictionary)  |
+    | 0010 | LZ4       | NybbleField raw bytes + NybbleField packed bytes + data |
+    | 0011 | 4BIT      | range coded: NybbleField length + NybbleField base +  |
+    | 0100 | 5BIT      |   ``length`` characters of (code point - base) in the |
+    | 0101 | 6BIT      |   given width                                         |
+    | 0110 | 7BIT      |                                                       |
+    | 0111 | EMPTY     | nothing                                               |
+    | 1000 | RANGE_N   | NybbleField width, then as the range codes above      |
+    | 1001 | HEX       | upper-case bit + NybbleField length + 4 bits per char |
+    | 1010 | DATETIME  | ISO-8601 date/date-time packed into binary fields     |
+    | 1011 | BASE64    | NybbleField byte count + decoded bytes                |
+    | 11xx | reserved  |                                                       |
+
+    The encoder computes every representation that applies and keeps the
+    shortest one.
     """
 
     # The special handling needed flag
-    NEEDS_SPECIAL_HANDLING: BitArray = BitArray(bin="1", length=1)
-    NO_SPECIAL_HANDLING: BitArray = BitArray(bin="0", length=1)
+    NEEDS_SPECIAL_HANDLING: BitArray = BitArray(bin="1")
+    NO_SPECIAL_HANDLING: BitArray = BitArray(bin="0")
 
-    # The special handling flags. If more are added, expand this to four bits.
-    SPECIAL_HANDLING_LENGTH: int = 3
-    SPECIAL_HANDLING_UUID: BitArray = BitArray(
-        bin="000", length=SPECIAL_HANDLING_LENGTH
-    )
-    SPECIAL_HANDLING_URL: BitArray = BitArray(bin="001", length=SPECIAL_HANDLING_LENGTH)
-    SPECIAL_HANDLING_LZ4: BitArray = BitArray(bin="010", length=SPECIAL_HANDLING_LENGTH)
-    SPECIAL_HANDLING_4BIT: BitArray = BitArray(
-        bin="011", length=SPECIAL_HANDLING_LENGTH
-    )
-    SPECIAL_HANDLING_5BIT: BitArray = BitArray(
-        bin="100", length=SPECIAL_HANDLING_LENGTH
-    )
-    SPECIAL_HANDLING_6BIT: BitArray = BitArray(
-        bin="101", length=SPECIAL_HANDLING_LENGTH
-    )
-    SPECIAL_HANDLING_7BIT: BitArray = BitArray(
-        bin="110", length=SPECIAL_HANDLING_LENGTH
-    )
-    SPECIAL_HANDLING_EMPTY_STRING: BitArray = BitArray(
-        bin="111", length=SPECIAL_HANDLING_LENGTH
-    )
+    SPECIAL_HANDLING_LENGTH: int = 4
+    SPECIAL_HANDLING_UUID: BitArray = BitArray(bin="0000")
+    SPECIAL_HANDLING_URL: BitArray = BitArray(bin="0001")
+    SPECIAL_HANDLING_LZ4: BitArray = BitArray(bin="0010")
+    SPECIAL_HANDLING_4BIT: BitArray = BitArray(bin="0011")
+    SPECIAL_HANDLING_5BIT: BitArray = BitArray(bin="0100")
+    SPECIAL_HANDLING_6BIT: BitArray = BitArray(bin="0101")
+    SPECIAL_HANDLING_7BIT: BitArray = BitArray(bin="0110")
+    SPECIAL_HANDLING_EMPTY_STRING: BitArray = BitArray(bin="0111")
+    SPECIAL_HANDLING_RANGE_N: BitArray = BitArray(bin="1000")
+    SPECIAL_HANDLING_HEX: BitArray = BitArray(bin="1001")
+    SPECIAL_HANDLING_DATETIME: BitArray = BitArray(bin="1010")
+    SPECIAL_HANDLING_BASE64: BitArray = BitArray(bin="1011")
+
+    # LZ4 has a fixed overhead that never pays off on short strings.
+    LZ4_MIN_BYTES: int = 24
+
+    _RANGE_CODES: dict[int, BitArray] = {
+        4: SPECIAL_HANDLING_4BIT,
+        5: SPECIAL_HANDLING_5BIT,
+        6: SPECIAL_HANDLING_6BIT,
+        7: SPECIAL_HANDLING_7BIT,
+    }
 
     def __init__(
         self,
         value: str | None = None,
-        bits: BitArray | None = None,
+        bits: "BitArray | BitReader | None" = None,
         tag_dictionary: TagDictionary | None = None,
     ) -> None:
-        """Initialize a StringNode with a string value.
-
-        Detects UUID format and normalizes case and hyphenation for storage.
-        Non-UUID strings are stored as-is.
+        """Initialize a StringNode with a string value or from a bitstream.
 
         Args:
             value: The string value to store if not None
             bits: optional the bitstream representation of the string to initialize
                 from.
+            tag_dictionary: The tag dictionary used for interned (URL) strings.
         """
         self.value: str = ""
-
         if value is not None:
             self.value = value
         elif bits is not None:
@@ -89,9 +128,8 @@ class StringNode(Node):
 
     def to_binary(self, tag_dictionary: TagDictionary | None = None) -> BitArray:
         """
-        Convert the string to the binary bitstream representation. Some types of
-        strings will receive special handling to allow for better compression. So
-        far, these include strings that contain UUIDs or URLs.
+        Convert the string to the binary bitstream representation, picking the
+        shortest applicable encoding.
 
         Args:
             tag_dictionary: The tag dictionary to use for URL encoding
@@ -103,31 +141,49 @@ class StringNode(Node):
         Returns:
             BitArray: Binary data starting with the string type code followed by
                 the compressed/encoded string data.
-
         """
         if self.value is None:
             raise ValueError("Cannot convert a string set to None value!")
+        return BitArray(bin=self.get_binary_code()) + self.encode_payload(
+            self.value, tag_dictionary
+        )
 
-        # Handle special cases
-        if len(self.value) == 0:
-            log.debug("Encoding empty string")
-            data_bits = self._empty_string_to_binary()
-        elif self._is_uuid():
-            log.debug(f"Encoding UUID {self.value}")
-            data_bits = self._uuid_to_binary()
-        elif self._is_url():
-            log.debug(f"Encoding URL {self.value}")
-            data_bits = self._url_to_binary(tag_dictionary)
-        else:
-            log.debug(f"Encoding normal string {self.value}")
-            data_bits = self._string_to_binary()
+    @classmethod
+    def encode_payload(
+        cls, value: str, tag_dictionary: TagDictionary | None = None
+    ) -> BitArray:
+        """Encode a string without its type code."""
+        if len(value) == 0:
+            return cls.NEEDS_SPECIAL_HANDLING + cls.SPECIAL_HANDLING_EMPTY_STRING
+        if _UUID_RE.match(value) and not (
+            any(c.isupper() for c in value) and any(c.islower() for c in value)
+        ):
+            return cls._uuid_to_binary(value)
+        if cls._is_url(value):
+            if tag_dictionary is None:
+                raise KeyError("Cannot encode a URL without a tag dictionary.")
+            return cls._url_to_binary(value, tag_dictionary)
 
-        log.debug(f"Data bits length: {data_bits.length}")
-
-        return BitArray(bin=self.get_binary_code(), length=3) + data_bits
+        candidates: list[BitArray] = [cls._encode_string(value)]
+        encoders: tuple[Callable[[str], BitArray | None], ...] = (
+            cls._compress_range,
+            cls._encode_hex,
+            cls._encode_datetime,
+            cls._encode_base64,
+            cls._encode_lz4,
+        )
+        for encoder in encoders:
+            candidate = encoder(value)
+            if candidate is not None:
+                candidates.append(candidate)
+        best = min(candidates, key=lambda b: b.len)
+        log.debug(f"String encoded to {best.len} bits from {len(value)} chars")
+        return best
 
     def to_value(
-        self, bits: BitArray, tag_dictionary: TagDictionary | None = None
+        self,
+        bits: "BitArray | BitReader",
+        tag_dictionary: TagDictionary | None = None,
     ) -> str:
         """
         Convert the node from it's binary stream representation. This reverses
@@ -143,24 +199,52 @@ class StringNode(Node):
         Returns:
             str: The string value.
         """
-        # Need at least 3 + 1 + 3 = 7 bits for an empty string
-        if bits.len < 7:
+        reader, owned = BitReader.begin(bits)
+        if len(reader) < 4:
             raise ValueError("Insufficient bits to decode string")
-
-        # Check for proper type code
-        if bits[0:3].bin != self.get_binary_code():
-            raise Exception("Invalid string type code")
-        del bits[:3]
-
-        # Check for special handling flag:
-        special_flag = bits[:1].bin
-        del bits[:1]
-        if special_flag == "1":
-            self.value = self._special_handling_to_value(bits, tag_dictionary)
-        else:
-            self.value = self._decode_string(bits)
-
+        if reader.peek_bin(3) != self.get_binary_code():
+            raise ValueError("Invalid string type code")
+        reader.read_uint(3)
+        self.value = self.decode_payload(reader, tag_dictionary)
+        reader.finish(bits, owned)
         return self.value
+
+    @classmethod
+    def decode_payload(
+        cls, reader: BitReader, tag_dictionary: TagDictionary | None = None
+    ) -> str:
+        """Decode a string payload (no type code) from the reader."""
+        if not reader.read_bool():
+            length = NybbleField.to_value(reader)
+            return reader.read_bytes(length).decode("utf-8")
+        code = reader.read_bits(cls.SPECIAL_HANDLING_LENGTH).bin
+        match code:
+            case cls.SPECIAL_HANDLING_UUID.bin:
+                return cls._decode_uuid(reader)
+            case cls.SPECIAL_HANDLING_URL.bin:
+                return cls._decode_url(reader, tag_dictionary)
+            case cls.SPECIAL_HANDLING_LZ4.bin:
+                return cls._decode_lz4(reader)
+            case cls.SPECIAL_HANDLING_4BIT.bin:
+                return cls._decode_range(reader, 4)
+            case cls.SPECIAL_HANDLING_5BIT.bin:
+                return cls._decode_range(reader, 5)
+            case cls.SPECIAL_HANDLING_6BIT.bin:
+                return cls._decode_range(reader, 6)
+            case cls.SPECIAL_HANDLING_7BIT.bin:
+                return cls._decode_range(reader, 7)
+            case cls.SPECIAL_HANDLING_RANGE_N.bin:
+                return cls._decode_range(reader, NybbleField.to_value(reader))
+            case cls.SPECIAL_HANDLING_EMPTY_STRING.bin:
+                return ""
+            case cls.SPECIAL_HANDLING_HEX.bin:
+                return cls._decode_hex(reader)
+            case cls.SPECIAL_HANDLING_DATETIME.bin:
+                return cls._decode_datetime(reader)
+            case cls.SPECIAL_HANDLING_BASE64.bin:
+                return cls._decode_base64(reader)
+            case _:
+                raise ValueError(f"Invalid special handling type: {code}")
 
     def get_binary_code(self) -> str:
         """Return the 3-bit binary code for this node type.
@@ -178,395 +262,239 @@ class StringNode(Node):
         """
         return "string"
 
-    ##############################
-    #  Encoding/Decoding Helpers
-    ##############################
-    def _is_uuid(self) -> bool:
-        """Check if the current value represents a UUID.
-
-        Supports both hyphenated (36 chars) and non-hyphenated (32 chars) UUID formats.
-
-        Returns:
-            bool: True if the string is a valid UUID format.
-        """
-        # Check for 32 hexadecimal characters (case-insensitive)
-        if re.match(r"^[0-9a-f]{32}$", self.value, re.IGNORECASE) or re.match(
-            r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-            self.value,
-            re.IGNORECASE,
-        ):
-            self.uuid = uuid.UUID(self.value)
-            self.hyphens = "-" in self.value
-            self.upper_case_hex = any(char.isupper() for char in self.value)
-            return True
-        return False
-
-    def _is_url(self) -> bool:
-        """
-        Check if the current value is a URL.
-
-        Returns:
-            bool: True if the string is a URL, False otherwise.
-        """
-        if self.value.lower().startswith("https://") or self.value.lower().startswith(
-            "http://"
-        ):
-            return True
-        return False
-
-    def _empty_string_to_binary(self) -> BitArray:
-        """
-        Converts an empty string to a binary value.
-
-        Returns:
-            BitArray: The bitstream representation of the empty string.
-        """
-        return (
-            BitArray(StringNode.NEEDS_SPECIAL_HANDLING)
-            + StringNode.SPECIAL_HANDLING_EMPTY_STRING
-        )
-
-    def _string_to_binary(self) -> BitArray:
-        """
-        Converts a string without special handling to a binary value. The string
-        is compressed with LZ4 compression, and if the compressed value is shorter,
-        then the string is stored compressed. Otherwise the stirng is stored in
-        raw text.
-
-        Returns:
-            BitArray: The bitstream representation of the string.
-        """
-        # Let's LZ4 compress the string
-        compressed_bits = self._encode_lz4()
-
-        # And range compress the string to see if that's shorter.
-        base, range_val = self._check_range()
-        range_compressed = self._compress_range(base, range_val)
-
-        # And build the raw data bits for a normal string
-        data_bits = self._encode_string()
-
-        log.info(
-            f"Encoded Sizes: raw[{data_bits.length}] "
-            f"lz4[{compressed_bits.length}] "
-            f"range[{range_compressed.length}]"
-        )
-
-        if (
-            range_compressed.length < data_bits.length
-            and range_compressed.length < compressed_bits.length
-        ):
-            log.debug(
-                f"Range compressing: {data_bits.length} to {range_compressed.length}"
-            )
-            data_bits = range_compressed
-        elif compressed_bits.length < data_bits.length:
-            log.debug(
-                f"LZ4 compressing: {data_bits.length} to {compressed_bits.length}"
-            )
-            data_bits = compressed_bits
-        else:
-            log.debug(f"No compression: {data_bits.length}")
-        return data_bits
-
-    def _encode_string(self) -> BitArray:
-        """
-        Encodes the string as a stream of 7-bit nybbles.
-
-        Returns:
-            BitArray: The bitstream representation of the string.
-        """
-        return (
-            StringNode.NO_SPECIAL_HANDLING
-            + NybbleField.to_binary(len(self.value))
-            + BitArray(self.value.encode("utf-8"))
-        )
-
-    def _encode_lz4(self) -> BitArray:
-        compressed_bytes: bytes = lz4.frame.compress(self.value.encode("utf-8"))
-        compressed_length = len(compressed_bytes) * 8
-        return (
-            BitArray(StringNode.NEEDS_SPECIAL_HANDLING)
-            + StringNode.SPECIAL_HANDLING_LZ4
-            + NybbleField.to_binary(compressed_length)
-            + BitArray(bytes=compressed_bytes)
-        )
-
-    def _check_range(self) -> tuple[int, int]:
-        """
-        ASCII string data tends to be composed only of upper-case letters and
-        numbers, which only represent about 62 characters. This plus space
-        typically all lie between character 32 and 96 in the ascii table. In
-        which case, we can use only six bits to represent each character.
-
-        Otherwise, we may also be able to use only 7 bits if nothing is past character
-        127, which is even more common.
-
-        The return from this call is the base value (lowest #) and range
-        (highest-lowest) of the characters.
-
-        Returns:
-            tuple[int, int]: base (lowest value) and range (highest-lowest) for
-                the characters in the string.
-        """
-        if len(self.value) == 0:
-            return 0, 255
-        lowest = 255
-        highest = 0
-        for char in self.value:
-            if ord(char) < lowest:
-                lowest = ord(char)
-            if ord(char) > highest:
-                highest = ord(char)
-        return lowest, highest - lowest
-
-    def _compress_range(self, base: int, range_val: int) -> BitArray:
-        """
-        Compresses a range of characters into 7 bit values or less.
-
-        Compression is done in 3 steps:
-            - first we determine the number of bits to use to represent the
-              range and set the two bit flag accordingly.
-            - then we determine the length of the string.
-            - finally we compress the string by subtracting the base from each
-              character and using the new value compressed to the minimal number
-              of bits.
-        The result is the combined flag for compression, the length of the string,
-        the base value, and the compressed data, unless the length of this data
-        is longer than the original string, in which case we just encode the string
-        in raw text.
-
-        Args:
-            base: The lowest value in the range
-            range_val: The highest value in the range
-
-        Returns:
-            BitArray: The bitstream representation of the string
-        """
-        # Build the bit-size and flags from the range.
-        data_bits = BitArray(StringNode.NEEDS_SPECIAL_HANDLING)
-        bit_length = 7
-        if range_val < 16:
-            data_bits.append(StringNode.SPECIAL_HANDLING_4BIT)
-            bit_length = 4
-        elif range_val < 32:
-            data_bits.append(StringNode.SPECIAL_HANDLING_5BIT)
-            bit_length = 5
-        elif range_val < 64:
-            data_bits.append(StringNode.SPECIAL_HANDLING_6BIT)
-            bit_length = 6
-        else:
-            data_bits.append(StringNode.SPECIAL_HANDLING_7BIT)
-
-        # Set the range compression flag
-        data_bits.append(NybbleField.to_binary(len(self.value)))
-        data_bits.append(NybbleField.to_binary(base))
-        for char in self.value:
-            data_bits.append(BitArray(uint=ord(char) - base, length=bit_length))
-
-        return data_bits
-
-    def _uuid_to_binary(self) -> BitArray:
-        """
-        Converts a UUID to a binary representation (16 bytes) instead of a string
-        twice as long or longer. Since UUIDs are regular items in data, this is a
-        nice 50% compression or better. Also, since UUIDs are fixed length, we
-        avoid adding a length field, which saves some more space. We do add two
-        extra bits to store the hyphens and case flags to ensure we restore it
-        exactly as it was passed in.
-
-        Returns:
-            BitArray: The bits of the UUID.
-        """
-        # Convert UUID to 16 bytes
-        u: uuid.UUID = uuid.UUID(self.value)
-        data_bits: BitArray = BitArray(bytes=u.bytes)
-        # Add leader bits: hyphens (1 if has hyphens, 0 otherwise), case
-        # (1 if upper, 0 otherwise)
-        hyphens: BitArray = BitArray(bin="1" if self.hyphens else "0")
-        hex: BitArray = BitArray(bin="1" if self.upper_case_hex else "0")
-
-        return (
-            BitArray(StringNode.NEEDS_SPECIAL_HANDLING)
-            + StringNode.SPECIAL_HANDLING_UUID
-            + hyphens
-            + hex
-            + data_bits
-        )
-
-    def _url_to_binary(self, tag_dictionary: TagDictionary | None = None) -> BitArray:
-        """
-        Convert a URL to a lookup string, just like a field tag. This ensures that
-        any repeated URLs will be compressed to four bytes or less. Great if your
-        data contains a lot of repeated URL data.
-
-        Args:
-            tag_dictionary (TagDictionary | None, optional): The tag dictionary to
-            use for compression. Defaults to None.
-
-        Raises:
-            KeyError: If the tag dictionary is not passed.
-
-        Returns:
-            BitArray: The bitstream representation of the url as a single tag-id.
-        """
-        if tag_dictionary is None:
-            raise KeyError("Cannot encode a URL without a tag dictionary.")
-
-        # Let's try to tag-encode the URL
-        if not tag_dictionary.has_tag(self.value):
-            tag_id = tag_dictionary.add(self.value)
-        else:
-            tag_id = tag_dictionary.get(self.value)
-        return (
-            BitArray(StringNode.NEEDS_SPECIAL_HANDLING)
-            + StringNode.SPECIAL_HANDLING_URL
-            + NybbleField.to_binary(tag_id)
-        )
-
-    def _special_handling_to_value(
-        self, bits: BitArray, tag_dictionary: TagDictionary | None
-    ) -> str:
-        """
-        This method decodes a string that uses "special handling" to be stored.
-        This ranges from known types like UUID and URLs, to LZ4 compression, to
-        explicit
-        """
-        special_handling_type = bits[: self.SPECIAL_HANDLING_LENGTH].bin
-        del bits[: self.SPECIAL_HANDLING_LENGTH]
-        match special_handling_type:
-            case self.SPECIAL_HANDLING_UUID.bin:
-                return self._decode_uuid(bits)
-            case self.SPECIAL_HANDLING_URL.bin:
-                return self._decode_url(bits, tag_dictionary)
-            case self.SPECIAL_HANDLING_LZ4.bin:
-                return self._decode_lz4(bits)
-            case self.SPECIAL_HANDLING_4BIT.bin:
-                return self._decode_range(bits, 4)
-            case self.SPECIAL_HANDLING_5BIT.bin:
-                return self._decode_range(bits, 5)
-            case self.SPECIAL_HANDLING_6BIT.bin:
-                return self._decode_range(bits, 6)
-            case self.SPECIAL_HANDLING_7BIT.bin:
-                return self._decode_range(bits, 7)
-            case self.SPECIAL_HANDLING_EMPTY_STRING.bin:
-                self.value = ""
-                return self.value
-            case _:
-                raise Exception("Invalid special handling type")
-
-    def _decode_range(self, bits: BitArray, bit_size: int) -> str:
-        """
-        Decodes a range compressed string from the bitstream.
-
-        Args:
-            bits (BitArray): The raw bitstream being decoded.
-            bit_size (int): The number of bits used to encode each character.
-
-        Returns:
-            str: The decoded string.
-        """
-        length = NybbleField.to_value(bits)
-        base = NybbleField.to_value(bits)
-        self.value = ""
-        for _ in range(length):
-            self.value += chr(bits[:bit_size].uint + base)
-            del bits[:bit_size]
-
-        return self.value
-
-    def _decode_lz4(self, bits: BitArray) -> str:
-        """
-        Decodes a LZ4 string from the bitstream.
-
-        Args:
-            bits (BitArray): The raw bitstream being decoded.
-
-        Returns:
-            str: The decoded LZ4 string.
-        """
-        length = NybbleField.to_value(bits)
-        compressed_bytes = bits[:length].tobytes()
-        return lz4.frame.decompress(compressed_bytes).decode("utf-8")
-
-    def _decode_url(self, bits: BitArray, tag_dictionary: TagDictionary | None) -> str:
-        """
-        Decodes a URL from a compressed tag.
-
-        Args:
-            bits (BitArray): The raw bitstream being decoded.
-            tag_dictionary (TagDictionary | None, optional): The tag dictionary for
-            encoding and decoding. Defaults to None. Must be set for URL decoding.
-
-        Raises:
-            KeyError: The tag dictionary was not provided, or the tag id was not
-            found in the dictionary.
-
-        Returns:
-            str: The decoded URL string.
-        """
-        if tag_dictionary is None:
-            raise KeyError("Tag dictionary must be provided for URL decoding")
-
-        tag_id = NybbleField.to_value(bits)
-        if not tag_dictionary.has_tag_id(tag_id):
-            raise KeyError(f"Unknown tag ID: {tag_id}")
-
-        self.value = tag_dictionary.lookup_tag(tag_id)
-        return self.value
-
-    def _decode_uuid(self, bits: BitArray) -> str:
-        """
-        Decodes a UUID value from the bitstream.
-
-        Args:
-            bits (BitArray): The raw bitstream being decoded.
-
-        Returns:
-            str: The decoded URL string.
-        """
-        # Check for UUID
-        hyphens = bits[:1].bin == "1"
-        del bits[:1]
-        hex = bits[:1].bin == "1"
-        del bits[:1]
-        data = bits[:128]
-        del bits[:128]
-        self.value = uuid.UUID(bytes=data.tobytes()).hex
-        if len(self.value) == 32 and hyphens:
-            self.value = (
-                self.value[:8]
-                + "-"
-                + self.value[8:12]
-                + "-"
-                + self.value[12:16]
-                + "-"
-                + self.value[16:20]
-                + "-"
-                + self.value[20:]
-            )
-        if hex:
-            self.value = self.value.upper()
-        else:
-            self.value = self.value.lower()
-        return self.value
-
-    def _decode_string(self, bits: BitArray) -> str:
-        """
-        Decodes a normal string. This could be an LZ4 compressed string, or a
-        range compressed string, or just a POT (plain-old-text) string.
-
-        Args:
-            bits (BitArray): The raw bitstream being decoded.
-
-        Returns:
-            str: The decoded value string.
-        """
-        length = NybbleField.to_value(bits)
-        data = bits[: length * 8]
-        del bits[: length * 8]  # noqa E501
-        self.value = str(data.tobytes().decode("utf-8"))
-        return self.value
-
     def get_value(self) -> Any:
         return self.value
+
+    ##############################
+    #  Encoders
+    ##############################
+
+    @staticmethod
+    def _is_url(value: str) -> bool:
+        lower = value.lower()
+        return lower.startswith("https://") or lower.startswith("http://")
+
+    @classmethod
+    def _special(cls, code: BitArray) -> BitArray:
+        return cls.NEEDS_SPECIAL_HANDLING + code
+
+    @classmethod
+    def _encode_string(cls, value: str) -> BitArray:
+        """Plain UTF-8: NybbleField byte count + the bytes."""
+        data = value.encode("utf-8")
+        return (
+            cls.NO_SPECIAL_HANDLING
+            + NybbleField.to_binary(len(data))
+            + BitArray(bytes=data)
+        )
+
+    @classmethod
+    def _encode_lz4(cls, value: str) -> BitArray | None:
+        data = value.encode("utf-8")
+        if len(data) < cls.LZ4_MIN_BYTES:
+            return None
+        packed = lz4.block.compress(data, store_size=False)
+        return (
+            cls._special(cls.SPECIAL_HANDLING_LZ4)
+            + NybbleField.to_binary(len(data))
+            + NybbleField.to_binary(len(packed))
+            + BitArray(bytes=packed)
+        )
+
+    @classmethod
+    def _compress_range(cls, value: str) -> BitArray:
+        """
+        Range coding: every code point is stored as (code point - base) using
+        just enough bits for the spread between the lowest and highest code
+        point in the string.
+        """
+        codes = [ord(c) for c in value]
+        base = min(codes)
+        width = max(4, (max(codes) - base).bit_length())
+        if width in cls._RANGE_CODES:
+            bits = cls._special(cls._RANGE_CODES[width])
+        else:
+            bits = cls._special(cls.SPECIAL_HANDLING_RANGE_N) + NybbleField.to_binary(
+                width
+            )
+        bits.append(NybbleField.to_binary(len(codes)))
+        bits.append(NybbleField.to_binary(base))
+        for code in codes:
+            bits.append(BitArray(uint=code - base, length=width))
+        return bits
+
+    @classmethod
+    def _encode_hex(cls, value: str) -> BitArray | None:
+        if _HEX_LOWER_RE.match(value):
+            upper = False
+        elif _HEX_UPPER_RE.match(value):
+            upper = True
+        else:
+            return None
+        bits = (
+            cls._special(cls.SPECIAL_HANDLING_HEX)
+            + BitArray(bool=upper)
+            + NybbleField.to_binary(len(value))
+        )
+        for char in value:
+            bits.append(BitArray(uint=int(char, 16), length=4))
+        return bits
+
+    @classmethod
+    def _encode_base64(cls, value: str) -> BitArray | None:
+        if len(value) < 8 or len(value) % 4 != 0 or not _BASE64_RE.match(value):
+            return None
+        try:
+            data = base64.b64decode(value, validate=True)
+        except ValueError:
+            return None
+        if base64.b64encode(data).decode("ascii") != value:
+            return None
+        return (
+            cls._special(cls.SPECIAL_HANDLING_BASE64)
+            + NybbleField.to_binary(len(data))
+            + BitArray(bytes=data)
+        )
+
+    @classmethod
+    def _encode_datetime(cls, value: str) -> BitArray | None:
+        """
+        Packs ISO-8601 ``YYYY-MM-DD`` or ``YYYY-MM-DDTHH:MM:SS[.f][Z|+HH:MM]``:
+
+        - 1 bit: has time
+        - 22 bits: day ordinal (days since 0001-01-01)
+        - if time: 17 bits second of day, 4 bits fraction digit count,
+          fraction value in just enough bits for that many digits,
+          2 bits zone (00 none, 01 Z, 10 offset) and, for an offset,
+          1 sign bit + 5 bits hours + 6 bits minutes.
+        """
+        match = _DATETIME_RE.match(value)
+        if match is None:
+            return None
+        year, month, day, hour, minute, second, fraction, zone = match.groups()
+        try:
+            date = datetime.date(int(year), int(month), int(day))
+            if hour is not None:
+                datetime.time(int(hour), int(minute), int(second))
+        except ValueError:
+            return None
+        bits = cls._special(cls.SPECIAL_HANDLING_DATETIME)
+        bits.append(BitArray(bool=hour is not None))
+        bits.append(BitArray(uint=date.toordinal() - 1, length=_DAY_BITS))
+        if hour is None:
+            return bits
+        seconds = int(hour) * 3600 + int(minute) * 60 + int(second)
+        bits.append(BitArray(uint=seconds, length=_SECOND_BITS))
+        digits = len(fraction) if fraction else 0
+        bits.append(BitArray(uint=digits, length=4))
+        if digits:
+            bits.append(
+                BitArray(uint=int(fraction), length=(10**digits - 1).bit_length())
+            )
+        if zone is None:
+            bits.append(BitArray(bin="00"))
+        elif zone == "Z":
+            bits.append(BitArray(bin="01"))
+        else:
+            zone_hours, zone_minutes = int(zone[1:3]), int(zone[4:6])
+            if zone_hours > 23 or zone_minutes > 59:
+                return None
+            bits.append(BitArray(bin="10"))
+            bits.append(BitArray(bool=zone[0] == "-"))
+            bits.append(BitArray(uint=zone_hours, length=5))
+            bits.append(BitArray(uint=zone_minutes, length=6))
+        return bits
+
+    @classmethod
+    def _uuid_to_binary(cls, value: str) -> BitArray:
+        """
+        Converts a UUID to its 16 raw bytes, plus a hyphen flag and an upper
+        case flag so the original text is restored exactly. Mixed-case UUIDs
+        are not sent this way, since they could not be restored.
+        """
+        u = uuid.UUID(value)
+        return (
+            cls._special(cls.SPECIAL_HANDLING_UUID)
+            + BitArray(bool="-" in value)
+            + BitArray(bool=any(c.isupper() for c in value))
+            + BitArray(bytes=u.bytes)
+        )
+
+    @classmethod
+    def _url_to_binary(cls, value: str, tag_dictionary: TagDictionary) -> BitArray:
+        """
+        Convert a URL to a lookup string, just like a field tag. This ensures that
+        any repeated URLs will be compressed to a few bits.
+        """
+        if tag_dictionary.has_tag(value):
+            tag_id = tag_dictionary.get(value)
+        else:
+            tag_id = tag_dictionary.add(value)
+        return cls._special(cls.SPECIAL_HANDLING_URL) + NybbleField.to_binary(tag_id)
+
+    ##############################
+    #  Decoders
+    ##############################
+
+    @staticmethod
+    def _decode_range(reader: BitReader, width: int) -> str:
+        length = NybbleField.to_value(reader)
+        base = NybbleField.to_value(reader)
+        return "".join(chr(reader.read_uint(width) + base) for _ in range(length))
+
+    @staticmethod
+    def _decode_lz4(reader: BitReader) -> str:
+        raw_length = NybbleField.to_value(reader)
+        packed_length = NybbleField.to_value(reader)
+        packed = reader.read_bytes(packed_length)
+        return lz4.block.decompress(packed, uncompressed_size=raw_length).decode(
+            "utf-8"
+        )
+
+    @staticmethod
+    def _decode_url(reader: BitReader, tag_dictionary: TagDictionary | None) -> str:
+        if tag_dictionary is None:
+            raise KeyError("Tag dictionary must be provided for URL decoding")
+        tag_id = NybbleField.to_value(reader)
+        return tag_dictionary.lookup_tag(tag_id)
+
+    @staticmethod
+    def _decode_uuid(reader: BitReader) -> str:
+        hyphens = reader.read_bool()
+        upper = reader.read_bool()
+        u = uuid.UUID(bytes=reader.read_bytes(16))
+        value = str(u) if hyphens else u.hex
+        return value.upper() if upper else value
+
+    @staticmethod
+    def _decode_hex(reader: BitReader) -> str:
+        upper = reader.read_bool()
+        length = NybbleField.to_value(reader)
+        value = "".join(f"{reader.read_uint(4):x}" for _ in range(length))
+        return value.upper() if upper else value
+
+    @staticmethod
+    def _decode_base64(reader: BitReader) -> str:
+        length = NybbleField.to_value(reader)
+        return base64.b64encode(reader.read_bytes(length)).decode("ascii")
+
+    @staticmethod
+    def _decode_datetime(reader: BitReader) -> str:
+        has_time = reader.read_bool()
+        date = datetime.date.fromordinal(reader.read_uint(_DAY_BITS) + 1)
+        value = f"{date.year:04d}-{date.month:02d}-{date.day:02d}"
+        if not has_time:
+            return value
+        seconds = reader.read_uint(_SECOND_BITS)
+        value += f"T{seconds // 3600:02d}:{(seconds // 60) % 60:02d}:{seconds % 60:02d}"
+        digits = reader.read_uint(4)
+        if digits:
+            fraction = reader.read_uint((10**digits - 1).bit_length())
+            value += f".{fraction:0{digits}d}"
+        zone = reader.read_bits(2).bin
+        if zone == "01":
+            value += "Z"
+        elif zone == "10":
+            sign = "-" if reader.read_bool() else "+"
+            value += f"{sign}{reader.read_uint(5):02d}:{reader.read_uint(6):02d}"
+        return value

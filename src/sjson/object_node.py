@@ -19,6 +19,8 @@ from sjson.tag_dictionary import TagDictionary
 
 from .node import Node
 from bitstring import BitArray
+
+from sjson.bit_reader import BitReader
 from typing import Any, Dict
 
 
@@ -32,7 +34,7 @@ class ObjectNode(Node):
     def __init__(
         self,
         obj: Dict[str, Any] | None = None,
-        bits: BitArray | None = None,
+        bits: "BitArray | BitReader | None" = None,
         tag_dictionary: TagDictionary | None = None,
     ) -> None:
         """
@@ -88,7 +90,7 @@ class ObjectNode(Node):
         bits = BitArray(bin=self.get_binary_code())
         named_nodes: list[NamedNode] = []
         for name, node in self.objects.items():
-            new_node = NamedNode(name=name, node=Node.from_value(node))
+            new_node = NamedNode(name=name, node=Node.from_value(node, tag_dictionary))
             named_nodes.append(new_node)
             bits.append(new_node.to_binary(tag_dictionary))
 
@@ -96,7 +98,7 @@ class ObjectNode(Node):
         return bits
 
     def to_value(
-        self, bits: BitArray, tag_dictionary: TagDictionary | None = None
+        self, bits: "BitArray | BitReader", tag_dictionary: TagDictionary | None = None
     ) -> Any:
         """Convert the binary stream data to an object node.
 
@@ -107,15 +109,17 @@ class ObjectNode(Node):
         Returns:
             dict[str,Any]: The object.
         """
+        reader, owned = BitReader.begin(bits)
         named_nodes = []
-        if bits.length < 6:
-            raise Exception("Insufficient bits to decode object")
-        if bits[0:3].bin != self.get_binary_code():
-            raise Exception("Invalid object type code")
-        del bits[0:3]
-        while bits[0:3].bin != Node.END_OF_OBJECT:
-            named_nodes.append(NamedNode(bits=bits, tag_dictionary=tag_dictionary))
-        del bits[0:3]
+        if len(reader) < 6:
+            raise ValueError("Insufficient bits to decode object")
+        if reader.peek_bin(3) != self.get_binary_code():
+            raise ValueError("Invalid object type code")
+        reader.read_uint(3)
+        while reader.peek_bin(3) != Node.END_OF_OBJECT:
+            named_nodes.append(NamedNode(bits=reader, tag_dictionary=tag_dictionary))
+        reader.read_uint(3)
+        reader.finish(bits, owned)
         for node in named_nodes:
             self.objects[node.get_name()] = node.get_value()
 

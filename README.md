@@ -15,61 +15,85 @@ To truly use this library, there must be an "ACK/NAK" mechanism over the top of 
 Since this is a totally dynamic protocol, each receiver will need a dictionary stored for each sender.
 
 
-The data is encoded in the following format:
-| bit numbers | description |
-|:-----------:|:-----------:|
-| 0-15        | 16 bit sender identifier |
-| 40+         | JSON data encoded using dictionary compression |
-| n - (n + 31) | 32 bit CRC checksum |
+## Wire format (0.2)
 
-The dictionary data is encoded as follows:
+All variable-length integers use a **NybbleField**: a unary prefix that says how
+many nybbles follow.
 
-| bit numbers | description |
-|:-----------:|:-----------:|
-| 0-15        | 16 bit sender identifier |
-| 16-31       | 16 bit length in bytes |
-| 32-39 or 32-47 | 8 or 16 bit tag id |
-| 8 bits |  8 bit tag length |
-| ... | tag data in UTF-8 |
-| repeat last two | additional tags |
-| CRC | 32 bit CRC checksum |
+| prefix | data bits | values | total bits |
+|:-------|:---------:|:-------|:----------:|
+| 0 | 4 | 0 - 15 | 5 |
+| 10 | 8 | 16 - 255 | 10 |
+| 110 | 12 | 256 - 4,095 | 15 |
+| 1110 | 16 | up to 65,535 | 20 |
+| 11110 | 20 | up to 1,048,575 | 25 |
+| 111110 | 24 | up to 16,777,215 | 30 |
+| 1111110 | 28 | up to 268,435,455 | 35 |
+| 1111111 | 32 | up to 4,294,967,295 | 39 |
 
-Tags are encoded as follows:
-Tag 00: The node is a value-only node and is not named.
-Tag 01-7F: 8 bit tag identifier assigned in order tags are seen.
-Tag 80xx-FFxx: 16 bit tag identifier assigned in order tags are seen when
-                there are more than 127 tags in dictionary.
+### Packet
 
-JSON is chosen as the compression media because it has only 6 data types,
-allowing us to use a four bit type code to represent them.
-| node type | JSON data type | Additional bits |
-|:---------:|:--------------:|:----------------|
-| 0 (000) | null field | 0 bits |
-| 1 (001)| boolean | 1 bit: 1 = true, 0 = false |
-| 2 (010)| number | 4*(n/2) bits where digits are BCD encoded, see below |
-| 3 (011)| string | 16 bits + n*8 bits or 8 + LZ4(n) bits where n is the # of chars |
-| 4 (100)| array | 16 bits for number of elements |
-| 5 (101)| object | 0 bits |
-| 6 (110)| End of object | 0 bits |
-| 7 (111)| Reserved | 0 bits |
+| field | description |
+|:------|:------------|
+| 16 bits | sender identifier |
+| NybbleField | length of the encoded data in bits |
+| ... | the encoded JSON value |
+| 32 bits | CRC32 of the zero-padded bytes of everything above |
 
-Named Nodes are encoded in the following format:
-| bit numbers | description |
-|:-----------:|:-----------:|
-| 0-7 or 0-15 | Tag ID (1 or 2 bytes) |
-| 8-10 or 16-18 | Node identifier (from above) [3 bits] |
-| 11+ or 19+ | additional bits |
+Receivers locate the CRC with the length field, so a packet that was padded to
+whole bytes in transit still decodes.
 
-BCD encoding is extended as follows:
-| character | BCD value | Description |
-|:---------:|:---------:|:-----------:|
-| 0-9 | 0-9 | The numbers 0-9 are encoded as a single nybble 0-9 |
-| . | 10 | The decimal point is encoded as 10 |
-| E | 11 | The exponent 'E' is encoded as 11 |
-| + | 12 | The plus sign is encoded as 12 |
-| - | 13 | The minus sign is encoded as 13 |
-| Infinity | 14 | Infinity value |
-| NaN | 15 | Not a Number code |
+### Dictionary update (response to a NAK)
 
-This allows us to encode any number, integer, floating point, or scientific
-notation, positive or negative, with an efficient binary representation.
+| field | description |
+|:------|:------------|
+| 16 bits | sender identifier |
+| NybbleField | number of tags |
+| per tag | NybbleField tag id, NybbleField UTF-8 byte length, UTF-8 bytes |
+
+Tag 0 means "unnamed"; field names are numbered from 1 in the order they are
+first seen.
+
+### Values
+
+Every value starts with a 3-bit type code.
+
+| code | JSON type | payload |
+|:----:|:----------|:--------|
+| 000 | null | none |
+| 001 | boolean | 1 bit |
+| 010 | number | see below |
+| 011 | string | see below |
+| 100 | array | the items, then `110` |
+| 101 | object | (NybbleField tag id + value) per member, then `110` |
+| 110 | end of array / object | none |
+| 111 | reserved | |
+
+**Numbers** carry a 2-bit sub-type and the encoder keeps the shortest form:
+
+| sub-type | form | payload |
+|:--------:|:-----|:--------|
+| 00 | integer | sign bit + NybbleField magnitude (below 2^32) |
+| 01 | float32 | 32-bit IEEE-754, used only when it round-trips exactly |
+| 10 | float64 | 64-bit IEEE-754 |
+| 11 | decimal | int/float bit + NybbleField count + BCD nybbles |
+
+The decimal form codes `0-9` as themselves, `.` as 10, `E` as 11, `+` as 12,
+`-` as 13, `Infinity` as 14 and `NaN` as 15.
+
+**Strings** start with a flag bit: `0` is plain UTF-8 (NybbleField byte count +
+bytes); `1` is followed by a 4-bit code. Every form that applies is tried and the
+shortest is kept.
+
+| code | form | payload |
+|:----:|:-----|:--------|
+| 0000 | UUID | hyphen bit + upper-case bit + 128 bits |
+| 0001 | URL | NybbleField id in the tag dictionary |
+| 0010 | LZ4 block | NybbleField raw bytes + NybbleField packed bytes + data |
+| 0011-0110 | range coded, 4-7 bits | NybbleField length + NybbleField base + (code point - base) per character |
+| 0111 | empty string | none |
+| 1000 | range coded, N bits | NybbleField width, then as above (non-ASCII text) |
+| 1001 | hex | upper-case bit + NybbleField length + 4 bits per character |
+| 1010 | ISO-8601 date / date-time | day ordinal, second of day, fraction, zone |
+| 1011 | base64 | NybbleField byte count + decoded bytes |
+| 11xx | reserved | |

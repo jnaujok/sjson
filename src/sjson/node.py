@@ -18,6 +18,8 @@ from abc import ABCMeta, abstractmethod
 from typing import Any
 from bitstring import BitArray
 
+from sjson.bit_reader import BitReader
+
 from sjson.tag_dictionary import TagDictionary
 
 
@@ -89,7 +91,7 @@ class Node(metaclass=ABCMeta):
 
     @classmethod
     def from_bits(
-        cls, bits: BitArray, tag_dictionary: TagDictionary | None = None
+        cls, bits: "BitArray | BitReader", tag_dictionary: TagDictionary | None = None
     ) -> Any:
         """
         Create a Node from its binary representation.
@@ -100,6 +102,15 @@ class Node(metaclass=ABCMeta):
         Returns:
             Node: A new Node instance.
         """
+        reader, owned = BitReader.begin(bits)
+        node = cls._from_reader(reader, tag_dictionary)
+        reader.finish(bits, owned)
+        return node
+
+    @classmethod
+    def _from_reader(
+        cls, bits: BitReader, tag_dictionary: TagDictionary | None = None
+    ) -> Any:
         from sjson.array_node import ArrayNode
         from sjson.boolean_node import BooleanNode
         from sjson.null_node import NullNode
@@ -107,7 +118,8 @@ class Node(metaclass=ABCMeta):
         from sjson.object_node import ObjectNode
         from sjson.string_node import StringNode
 
-        match str(bits[0:3].bin):
+        type_code = bits.peek_bin(3)
+        match type_code:
             case Node.NODE_NULL:
                 return NullNode(bits=bits)
             case Node.NODE_BOOLEAN:
@@ -121,7 +133,7 @@ class Node(metaclass=ABCMeta):
             case Node.NODE_OBJECT:
                 return ObjectNode(bits=bits, tag_dictionary=tag_dictionary)
             case _:
-                raise ValueError(f"Unknown node type: {bits[0:3].bin}")
+                raise ValueError(f"Unknown node type: {type_code}")
 
     @classmethod
     def from_value(

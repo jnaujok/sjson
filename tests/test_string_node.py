@@ -30,10 +30,10 @@ class TestStringNode:
         assert isinstance(ba, BitArray)
         assert ba[0:3].bin == Node.NODE_STRING
         assert ba[3:4].bin == "1"  # Special handling required flag
-        assert ba[4:7].bin == "000"  # Special-handling: UUID
-        assert ba[7:8].bin == "0"  # Hyphen Flag
-        assert ba[8:9].bin == "1"  # Upper Case Flag
-        assert len(ba) == 128 + 9
+        assert ba[4:8].bin == "0000"  # Special-handling: UUID
+        assert ba[8:9].bin == "0"  # Hyphen Flag
+        assert ba[9:10].bin == "1"  # Upper Case Flag
+        assert len(ba) == 128 + 10
         node2: Node = Node.from_bits(ba, tag_dictionary=tag_dictionary)
         assert node2.get_value() == uuid_str
 
@@ -45,10 +45,10 @@ class TestStringNode:
         assert isinstance(ba, BitArray)
         assert ba[0:3].bin == Node.NODE_STRING
         assert ba[3:4].bin == "1"  # Special handling required flag
-        assert ba[4:7].bin == "000"  # Special-handling: UUID
-        assert ba[7:8].bin == "1"  # Hyphen Flag
-        assert ba[8:9].bin == "0"  # Upper Case Flag
-        assert len(ba) == 128 + 9
+        assert ba[4:8].bin == "0000"  # Special-handling: UUID
+        assert ba[8:9].bin == "1"  # Hyphen Flag
+        assert ba[9:10].bin == "0"  # Upper Case Flag
+        assert len(ba) == 128 + 10
         node2: Node = Node.from_bits(ba, tag_dictionary)
         assert node2.get_value() == uuid_str
 
@@ -64,7 +64,7 @@ class TestStringNode:
         assert ba[0:3].bin == Node.NODE_STRING
         assert ba[3:4].bin == "1"  # Special handling required flag
         assert (
-            ba[4:7].bin == StringNode.SPECIAL_HANDLING_LZ4.bin
+            ba[4:8].bin == StringNode.SPECIAL_HANDLING_LZ4.bin
         )  # Special-handling: LZ4 Compressed
         node2: Node = Node.from_bits(ba)
         assert node2.get_value() == test_str
@@ -79,7 +79,7 @@ class TestStringNode:
         assert ba[0:3].bin == Node.NODE_STRING
         assert ba[3:4].bin == "1"  # Special handling required flag
         assert (
-            ba[4:7].bin == StringNode.SPECIAL_HANDLING_4BIT.bin
+            ba[4:8].bin == StringNode.SPECIAL_HANDLING_4BIT.bin
         )  # Special-handling: Range compressed to 4 bits
         node2: Node = Node.from_bits(ba)
         assert node2.get_value() == test_str
@@ -105,7 +105,7 @@ class TestStringNode:
         assert isinstance(ba, BitArray)
         assert ba[0:3].bin == Node.NODE_STRING
         assert ba[3:4].bin == "1"  # Special handling required flag
-        assert ba[4:7].bin == StringNode.SPECIAL_HANDLING_EMPTY_STRING.bin
+        assert ba[4:8].bin == StringNode.SPECIAL_HANDLING_EMPTY_STRING.bin
         node2: Node = Node.from_bits(ba)
         assert node2.get_value() == test_str
 
@@ -124,7 +124,7 @@ class TestStringNode:
         Returns:
             None
         """
-        test_str: str = "abc"
+        test_str: str = "xyz"
         node: StringNode = StringNode(test_str)
         ba: BitArray = node.to_binary()
         assert isinstance(ba, BitArray)
@@ -142,6 +142,6 @@ class TestStringNode:
         assert isinstance(ba, BitArray)
         assert ba[0:3].bin == Node.NODE_STRING
         assert ba[3:4].bin == StringNode.NEEDS_SPECIAL_HANDLING.bin
-        assert ba[4:7].bin == StringNode.SPECIAL_HANDLING_URL.bin  # URL flag
+        assert ba[4:8].bin == StringNode.SPECIAL_HANDLING_URL.bin  # URL flag
         node2: Node = Node.from_bits(ba, tag_dictionary=tag_dictionary)
         assert node2.get_value() == test_str
