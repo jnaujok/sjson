@@ -91,6 +91,11 @@ def _is_int(value: Any) -> bool:
 
 
 class SchemaCodec:
+    # In stream mode: enumerations with more options than this, and objects
+    # with more optional members than this, go through the stream cache.
+    CACHED_ENUM_SIZE = 31
+    CACHED_PRESENCE_BITS = 4
+
     def __init__(self, model: SchemaModel, dictionary: TagDictionary) -> None:
         self.model = model
         self.dictionary = dictionary
@@ -132,21 +137,54 @@ class SchemaCodec:
             NonConformingError: If the value does not fit the schema.
         """
         bits = BitArray()
-        self._encode(value, self.model.root if schema is None else schema, bits)
+        self._encode(value, self.model.root if schema is None else schema, bits, "")
         return bits
 
-    def _encode(self, value: Any, schema: SchemaType, out: BitArray) -> None:
+    def _cached_plan(self, plan: str, schema: SchemaType) -> bool:
+        """Whether values of this plan go through the stream cache."""
+        if self.dictionary.stream is None:
+            return False
+        if plan in (KIND_STRING, KIND_NUMBER):
+            return True
+        if plan == KIND_INTEGER:
+            low, high = schema.minimum, schema.maximum
+            return low is None or high is None or int(high - low).bit_length() > 6
+        return False
+
+    def _generic(self, value: Any, key: str) -> BitArray:
+        stream = self.dictionary.stream
+        if stream is not None:
+            saved, stream.path = stream.path, [key]
+        bits = Node.from_value(value, self.dictionary).to_binary(self.dictionary)
+        if stream is not None:
+            stream.path = saved
+        return bits
+
+    def _generic_value(self, reader: BitReader, key: str) -> Any:
+        stream = self.dictionary.stream
+        if stream is not None:
+            saved, stream.path = stream.path, [key]
+        value = Node.from_bits(reader, self.dictionary).get_value()
+        if stream is not None:
+            stream.path = saved
+        return value
+
+    def _encode(self, value: Any, schema: SchemaType, out: BitArray, key: str) -> None:
         plan, nullable = self._plan(schema)
         if nullable:
             out.append(BitArray(bool=value is None))
             if value is None:
                 return
         if plan == GENERIC:
-            out.append(
-                Node.from_value(value, self.dictionary).to_binary(self.dictionary)
-            )
+            out.append(self._generic(value, key))
         elif plan == ENUM:
-            self._encode_enum(value, schema, out)
+            stream = self.dictionary.stream
+            if stream is not None and len(schema.enum or []) > self.CACHED_ENUM_SIZE:
+                enum_bits = BitArray()
+                self._encode_enum(value, schema, enum_bits)
+                out.append(stream.encode(key, value, lambda: enum_bits))
+            else:
+                self._encode_enum(value, schema, out)
         elif plan == KIND_NULL:
             if value is not None:
                 raise NonConformingError(f"Expected null, got {value!r}")
@@ -154,22 +192,59 @@ class SchemaCodec:
             if not isinstance(value, bool):
                 raise NonConformingError(f"Expected a boolean, got {value!r}")
             out.append(BitArray(bool=value))
-        elif plan == KIND_INTEGER:
-            self._encode_integer(value, schema, out)
-        elif plan == KIND_NUMBER:
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise NonConformingError(f"Expected a number, got {value!r}")
-            out.append(NumberNode.encode_payload(value))
-        elif plan == KIND_STRING:
-            if not isinstance(value, str):
-                raise NonConformingError(f"Expected a string, got {value!r}")
-            out.append(StringNode.encode_payload(value, self.dictionary))
-        elif plan == KIND_ARRAY:
-            self._encode_array(value, schema, out)
-        elif plan == KIND_OBJECT:
-            self._encode_object(value, schema, out)
+        elif plan in (KIND_INTEGER, KIND_NUMBER, KIND_STRING):
+            self._check_scalar(value, schema, plan)
+            if self._cached_plan(plan, schema):
+                stream = self.dictionary.stream
+                assert stream is not None
+                out.append(
+                    stream.encode(
+                        key,
+                        value,
+                        lambda: self._plain_scalar(value, schema, plan),
+                        self.dictionary,
+                    )
+                )
+            else:
+                out.append(self._plain_scalar(value, schema, plan))
+        elif plan in (KIND_ARRAY, KIND_OBJECT):
+            encode = self._encode_array if plan == KIND_ARRAY else self._encode_object
+            stream = self.dictionary.stream
+            if stream is not None:
+                # Validate first, so a non-conforming value is never cached.
+                expected = list if plan == KIND_ARRAY else dict
+                if not isinstance(value, expected):
+                    raise NonConformingError(f"Expected {plan}, got {value!r}")
+                # Cache the value as the receiver will decode it (members in
+                # schema order), so both sides' caches hold identical entries.
+                canonical = self._canonical(value, schema)
+
+                def plain() -> BitArray:
+                    bits = BitArray()
+                    encode(canonical, schema, bits, key)
+                    return bits
+
+                out.append(stream.encode(key + "#", canonical, plain))
+            else:
+                encode(value, schema, out, key)
         else:  # pragma: no cover - plans are exhaustive
             raise AssertionError(plan)
+
+    def _canonical(self, value: Any, schema: SchemaType) -> Any:
+        """``value`` with object members in the order the decoder produces."""
+        plan, _ = self._plan(schema)
+        if plan == KIND_OBJECT and isinstance(value, dict):
+            properties = schema.properties
+            result = {
+                name: self._canonical(value[name], prop.type)
+                for name, prop in properties.items()
+                if name in value
+            }
+            result.update((k, v) for k, v in value.items() if k not in properties)
+            return result
+        if plan == KIND_ARRAY and isinstance(value, list) and schema.items is not None:
+            return [self._canonical(item, schema.items) for item in value]
+        return value
 
     def _encode_enum(self, value: Any, schema: SchemaType, out: BitArray) -> None:
         options = schema.enum or []
@@ -181,51 +256,81 @@ class SchemaCodec:
                 return
         raise NonConformingError(f"{value!r} is not one of the enumerated values")
 
-    def _encode_integer(self, value: Any, schema: SchemaType, out: BitArray) -> None:
+    def _check_scalar(self, value: Any, schema: SchemaType, plan: str) -> None:
+        if plan == KIND_STRING:
+            if not isinstance(value, str):
+                raise NonConformingError(f"Expected a string, got {value!r}")
+            return
+        if plan == KIND_NUMBER:
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise NonConformingError(f"Expected a number, got {value!r}")
+            return
         if not _is_int(value):
             raise NonConformingError(f"Expected an integer, got {value!r}")
         low, high = schema.minimum, schema.maximum
         if (low is not None and value < low) or (high is not None and value > high):
             raise NonConformingError(f"{value} is outside [{low}, {high}]")
+        if (
+            low is not None
+            and low >= 0
+            and not (high is not None and int(high - low).bit_length() <= 32)
+            and value - low > NybbleField.MAX_VALUE
+        ):
+            raise NonConformingError(f"{value} is too far above the minimum")
+
+    def _plain_scalar(self, value: Any, schema: SchemaType, plan: str) -> BitArray:
+        if plan == KIND_STRING:
+            return StringNode.encode_payload(value, self.dictionary)
+        if plan == KIND_NUMBER:
+            return NumberNode.encode_payload(value)
+        low, high = schema.minimum, schema.maximum
         if low is not None and high is not None:
             width = int(high - low).bit_length()
             if width <= 32:
-                if width:
-                    out.append(BitArray(uint=int(value - low), length=width))
-                return
+                return (
+                    BitArray(uint=int(value - low), length=width)
+                    if width
+                    else BitArray()
+                )
         if low is not None and low >= 0:
-            if value - low > NybbleField.MAX_VALUE:
-                raise NonConformingError(f"{value} is too far above the minimum")
-            out.append(NybbleField.to_binary(int(value - low)))
-            return
-        out.append(NumberNode.encode_payload(value))
+            return NybbleField.to_binary(int(value - low))
+        return NumberNode.encode_payload(value)
 
-    def _encode_array(self, value: Any, schema: SchemaType, out: BitArray) -> None:
+    def _encode_array(
+        self, value: Any, schema: SchemaType, out: BitArray, key: str
+    ) -> None:
         if not isinstance(value, list):
             raise NonConformingError(f"Expected an array, got {value!r}")
         if len(value) > NybbleField.MAX_VALUE:
             raise NonConformingError("Array is too long")
         out.append(NybbleField.to_binary(len(value)))
+        item_key = key + "[]"
         for item in value:
             if schema.items is None:
-                out.append(
-                    Node.from_value(item, self.dictionary).to_binary(self.dictionary)
-                )
+                out.append(self._generic(item, item_key))
             else:
-                self._encode(item, schema.items, out)
+                self._encode(item, schema.items, out, item_key)
 
-    def _encode_object(self, value: Any, schema: SchemaType, out: BitArray) -> None:
+    def _encode_object(
+        self, value: Any, schema: SchemaType, out: BitArray, key: str
+    ) -> None:
         if not isinstance(value, dict):
             raise NonConformingError(f"Expected an object, got {value!r}")
         properties = schema.properties
+        presence = BitArray()
         for name, prop in properties.items():
             if prop.required and name not in value:
                 raise NonConformingError(f"Missing required member {name!r}")
             if not prop.required:
-                out.append(BitArray(bool=name in value))
+                presence.append(BitArray(bool=name in value))
+        stream = self.dictionary.stream
+        if stream is not None and len(presence) > self.CACHED_PRESENCE_BITS:
+            out.append(stream.encode(key + "?", presence.uint, lambda: presence))
+        else:
+            out.append(presence)
         for name, prop in properties.items():
             if name in value:
-                self._encode(value[name], prop.type, out)
+                self._encode(value[name], prop.type, out, f"{key}/{name}")
 
         extras = [name for name in value if name not in properties]
         if schema.additional_properties:
@@ -233,16 +338,8 @@ class SchemaCodec:
             if extras:
                 out.append(NybbleField.to_binary(len(extras)))
                 for name in extras:
-                    if self.dictionary.has_tag(name):
-                        tag_id = self.dictionary.get(name)
-                    else:
-                        tag_id = self.dictionary.add(name)
-                    out.append(NybbleField.to_binary(tag_id))
-                    out.append(
-                        Node.from_value(value[name], self.dictionary).to_binary(
-                            self.dictionary
-                        )
-                    )
+                    out.append(self.dictionary.encode_id(name))
+                    out.append(self._generic(value[name], f"{key}/{name}"))
         elif extras:
             raise NonConformingError(f"Unexpected member(s): {extras}")
 
@@ -250,42 +347,66 @@ class SchemaCodec:
 
     def decode(self, reader: BitReader, schema: SchemaType | None = None) -> Any:
         """Decode a value written by :meth:`encode`."""
-        return self._decode(reader, self.model.root if schema is None else schema)
+        return self._decode(reader, self.model.root if schema is None else schema, "")
 
-    def _decode(self, reader: BitReader, schema: SchemaType) -> Any:
+    def _decode(self, reader: BitReader, schema: SchemaType, key: str) -> Any:
         plan, nullable = self._plan(schema)
         if nullable and reader.read_bool():
             return None
         if plan == GENERIC:
-            return Node.from_bits(reader, self.dictionary).get_value()
+            return self._generic_value(reader, key)
         if plan == ENUM:
             options = schema.enum or []
-            index = reader.read_uint((len(options) - 1).bit_length())
-            if index >= len(options):
-                raise ValueError(f"Enumeration index {index} out of range")
-            return options[index]
+
+            def read_enum(r: BitReader) -> Any:
+                index = r.read_uint((len(options) - 1).bit_length())
+                if index >= len(options):
+                    raise ValueError(f"Enumeration index {index} out of range")
+                return options[index]
+
+            stream = self.dictionary.stream
+            if stream is not None and len(options) > self.CACHED_ENUM_SIZE:
+                return stream.decode(reader, key, read_enum)
+            return read_enum(reader)
         if plan == KIND_NULL:
             return None
         if plan == KIND_BOOLEAN:
             return reader.read_bool()
-        if plan == KIND_INTEGER:
-            return self._decode_integer(reader, schema)
+        if plan in (KIND_INTEGER, KIND_NUMBER, KIND_STRING):
+            if self._cached_plan(plan, schema):
+                stream = self.dictionary.stream
+                assert stream is not None
+                return stream.decode(
+                    reader, key, lambda r: self._decode_scalar(r, schema, plan)
+                )
+            return self._decode_scalar(reader, schema, plan)
+        if plan in (KIND_ARRAY, KIND_OBJECT) and self.dictionary.stream is not None:
+            stream = self.dictionary.stream
+            decode = self._decode_array if plan == KIND_ARRAY else self._decode_object
+            return stream.decode(reader, key + "#", lambda r: decode(r, schema, key))
+        if plan == KIND_ARRAY:
+            return self._decode_array(reader, schema, key)
+        if plan == KIND_OBJECT:
+            return self._decode_object(reader, schema, key)
+        raise AssertionError(plan)  # pragma: no cover
+
+    def _decode_array(self, reader: BitReader, schema: SchemaType, key: str) -> list:
+        count = NybbleField.to_value(reader)
+        item_key = key + "[]"
+        items = []
+        for _ in range(count):
+            if schema.items is None:
+                items.append(self._generic_value(reader, item_key))
+            else:
+                items.append(self._decode(reader, schema.items, item_key))
+        return items
+
+    def _decode_scalar(self, reader: BitReader, schema: SchemaType, plan: str) -> Any:
         if plan == KIND_NUMBER:
             return NumberNode.decode_payload(reader)
         if plan == KIND_STRING:
             return StringNode.decode_payload(reader, self.dictionary)
-        if plan == KIND_ARRAY:
-            count = NybbleField.to_value(reader)
-            items = []
-            for _ in range(count):
-                if schema.items is None:
-                    items.append(Node.from_bits(reader, self.dictionary).get_value())
-                else:
-                    items.append(self._decode(reader, schema.items))
-            return items
-        if plan == KIND_OBJECT:
-            return self._decode_object(reader, schema)
-        raise AssertionError(plan)  # pragma: no cover
+        return self._decode_integer(reader, schema)
 
     def _decode_integer(self, reader: BitReader, schema: SchemaType) -> int:
         low, high = schema.minimum, schema.maximum
@@ -300,18 +421,30 @@ class SchemaCodec:
             raise ValueError("Expected an integer")
         return value  # type: ignore[return-value]
 
-    def _decode_object(self, reader: BitReader, schema: SchemaType) -> dict[str, Any]:
+    def _decode_object(
+        self, reader: BitReader, schema: SchemaType, key: str
+    ) -> dict[str, Any]:
         properties = schema.properties
+        optional = [name for name, prop in properties.items() if not prop.required]
+        stream = self.dictionary.stream
+        if stream is not None and len(optional) > self.CACHED_PRESENCE_BITS:
+            mask = stream.decode(
+                reader, key + "?", lambda r: r.read_uint(len(optional))
+            )
+            flags = BitArray(uint=mask, length=len(optional))
+            present_optional = dict(zip(optional, flags))
+        else:
+            present_optional = {name: reader.read_bool() for name in optional}
         present = {
-            name: prop.required or reader.read_bool()
+            name: prop.required or present_optional[name]
             for name, prop in properties.items()
         }
         result: dict[str, Any] = {}
         for name, prop in properties.items():
             if present[name]:
-                result[name] = self._decode(reader, prop.type)
+                result[name] = self._decode(reader, prop.type, f"{key}/{name}")
         if schema.additional_properties and reader.read_bool():
             for _ in range(NybbleField.to_value(reader)):
-                name = self.dictionary.lookup_tag(NybbleField.to_value(reader))
-                result[name] = Node.from_bits(reader, self.dictionary).get_value()
+                name = self.dictionary.decode_id(reader)
+                result[name] = self._generic_value(reader, f"{key}/{name}")
         return result

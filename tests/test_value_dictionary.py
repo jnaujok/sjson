@@ -58,15 +58,24 @@ class TestValueDictionary:
     def test_values_do_not_take_field_ids(self) -> None:
         dictionary = TagDictionary()
         StringNode("https://example.com/").to_binary(dictionary)
+        StringNode("https://example.com/").to_binary(dictionary)
         assert dictionary.last_index == 0
         assert dictionary.values is not None
         assert dictionary.values.get("https://example.com/") == 1
 
     def test_repeated_url_uses_the_same_id(self) -> None:
         dictionary = TagDictionary()
+        once = StringNode("https://example.com/").to_binary(dictionary)
         first = StringNode("https://example.com/").to_binary(dictionary)
         second = StringNode("https://example.com/").to_binary(dictionary)
         assert first == second
+        assert len(first) < len(once)
+
+    def test_url_seen_once_is_not_interned(self) -> None:
+        dictionary = TagDictionary()
+        StringNode("https://example.com/once").to_binary(dictionary)
+        assert dictionary.values is not None
+        assert dictionary.values.last_index == 0
 
     def test_strings_outside_the_enum_are_not_interned(self) -> None:
         dictionary = TagDictionary.from_schema(ORDER_JSON)
@@ -81,6 +90,7 @@ class TestValueNak:
         sender = SJSON()
         receiver = SJSON()
         document = {"home": "https://example.com/", "next": "https://example.com/2"}
+        sender.to_binary(document)  # first sighting: sent as text
         packet = sender.to_binary(document)
         receiver.load_dictionary(sender.nak_dictionary(sender.get_sender_id(), 0, 0))
         assert receiver.to_value(packet) == document
@@ -129,7 +139,7 @@ class TestInternedBeforeSpecialForms:
 class TestPacketVersion:
     def test_older_versions_are_rejected(self) -> None:
         packet = SJSON().to_binary({"a": "https://example.com/"})
-        assert SJSON.read_header(packet).version == SJSON.VERSION == 3
+        assert SJSON.read_header(packet).version == SJSON.VERSION == 4
         packet.overwrite("0b0001", 16)
         try:
             SJSON().to_value(packet)

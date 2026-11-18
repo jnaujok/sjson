@@ -73,7 +73,10 @@ class StringNode(Node):
     | 1001 | HEX       | upper-case bit + NybbleField length + 4 bits per char |
     | 1010 | DATETIME  | ISO-8601 date/date-time packed into binary fields     |
     | 1011 | BASE64    | NybbleField byte count + decoded bytes                |
-    | 11xx | reserved  |                                                       |
+    | 1100 | TEXT      | nothing: the bytes, NUL-terminated, are in the        |
+    |      |           |   packet's zstd-compressed text channel (stream mode, |
+    |      |           |   or a dictionary with a text dictionary)             |
+    | 1101-1111 | reserved |                                                   |
 
     The encoder computes every representation that applies and keeps the
     shortest one.
@@ -97,6 +100,11 @@ class StringNode(Node):
     SPECIAL_HANDLING_HEX: BitArray = BitArray(bin="1001")
     SPECIAL_HANDLING_DATETIME: BitArray = BitArray(bin="1010")
     SPECIAL_HANDLING_BASE64: BitArray = BitArray(bin="1011")
+    SPECIAL_HANDLING_TEXT: BitArray = BitArray(bin="1100")
+
+    # Stream mode: strings of at least this many UTF-8 bytes that have no
+    # cheaper special form go through the text channel.
+    TEXT_MIN_BYTES: int = 8
 
     # LZ4 has a fixed overhead that never pays off on short strings.
     LZ4_MIN_BYTES: int = 24
@@ -166,10 +174,16 @@ class StringNode(Node):
             any(c.isupper() for c in value) and any(c.islower() for c in value)
         ):
             return cls._uuid_to_binary(value)
-        if cls._is_url(value):
-            if values is None:
-                raise KeyError("Cannot encode a URL without a tag dictionary.")
-            return cls._interned_to_binary(values.add(value))
+        if cls._is_url(value) and values is not None and tag_dictionary is not None:
+            # Without a dictionary a URL is encoded like any other string.
+            # Intern a URL the second time it is seen: most URLs are never
+            # repeated, and interning costs a dictionary update (or, in stream
+            # mode, an inline definition).
+            if value in tag_dictionary.seen_urls:
+                return cls._special(cls.SPECIAL_HANDLING_INTERNED) + values.encode_id(
+                    value
+                )
+            tag_dictionary.seen_urls.add(value)
 
         candidates: list[BitArray] = [cls._encode_string(value)]
         encoders: tuple[Callable[[str], BitArray | None], ...] = (
@@ -184,6 +198,17 @@ class StringNode(Node):
             if candidate is not None:
                 candidates.append(candidate)
         best = min(candidates, key=lambda b: b.len)
+        channel = None if tag_dictionary is None else tag_dictionary.text
+        if channel is not None:
+            data = value.encode("utf-8")
+            text = cls._special(cls.SPECIAL_HANDLING_TEXT)
+            if (
+                len(data) >= cls.TEXT_MIN_BYTES
+                and b"\0" not in data
+                and len(text) + channel.BITS_PER_BYTE * (len(data) + 1) < len(best)
+            ):
+                channel.write_terminated(data)
+                return text
         log.debug(f"String encoded to {best.len} bits from {len(value)} chars")
         return best
 
@@ -250,6 +275,11 @@ class StringNode(Node):
                 return cls._decode_datetime(reader)
             case cls.SPECIAL_HANDLING_BASE64.bin:
                 return cls._decode_base64(reader)
+            case cls.SPECIAL_HANDLING_TEXT.bin:
+                channel = None if tag_dictionary is None else tag_dictionary.text
+                if channel is None:
+                    raise ValueError("Text-channel string without a text channel")
+                return channel.read_terminated().decode("utf-8")
             case _:
                 raise ValueError(f"Invalid special handling type: {code}")
 
@@ -472,8 +502,7 @@ class StringNode(Node):
     ) -> str:
         if tag_dictionary is None or tag_dictionary.values is None:
             raise KeyError("Tag dictionary must be provided for interned strings")
-        value_id = NybbleField.to_value(reader)
-        return tag_dictionary.values.lookup_tag(value_id)
+        return tag_dictionary.values.decode_id(reader)
 
     @staticmethod
     def _decode_uuid(reader: BitReader) -> str:

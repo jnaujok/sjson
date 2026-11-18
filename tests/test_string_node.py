@@ -138,6 +138,9 @@ class TestStringNode:
         tag_dictionary: TagDictionary = TagDictionary()
         test_str: str = "https://harvestwave.com"
         node: StringNode = StringNode(test_str)
+        first: BitArray = node.to_binary(tag_dictionary=tag_dictionary)
+        # The first sighting is sent as text; the second is interned.
+        assert first[4:8].bin != StringNode.SPECIAL_HANDLING_URL.bin
         ba: BitArray = node.to_binary(tag_dictionary=tag_dictionary)
         assert isinstance(ba, BitArray)
         assert ba[0:3].bin == Node.NODE_STRING

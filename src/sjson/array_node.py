@@ -71,6 +71,9 @@ class ArrayNode(Node):
                 concatenated binary representations of all items.
         """
         result = BitArray(bin=self.get_binary_code())
+        stream = None if tag_dictionary is None else tag_dictionary.stream
+        if stream is not None:
+            stream.path.append("[]")
         for item in self.items:
             result.append(
                 Node.from_value(item, tag_dictionary).to_binary(
@@ -80,6 +83,8 @@ class ArrayNode(Node):
         # Add the end of object marker. This saves 13 bis over encoding a length
         # and allows arrays of any size.
         result.append(BitArray(bin=Node.END_OF_OBJECT, length=3))
+        if stream is not None:
+            stream.path.pop()
         return result
 
     def to_value(
@@ -102,8 +107,13 @@ class ArrayNode(Node):
         # Skip the type
         reader.read_uint(3)
         # Get the items.
+        stream = None if tag_dictionary is None else tag_dictionary.stream
+        if stream is not None:
+            stream.path.append("[]")
         while reader.peek_bin(3) != Node.END_OF_OBJECT:
             items.append(Node.from_bits(reader, tag_dictionary).get_value())
+        if stream is not None:
+            stream.path.pop()
         reader.read_uint(3)
         reader.finish(bits, owned)
         self.items = items
