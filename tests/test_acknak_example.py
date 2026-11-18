@@ -14,6 +14,7 @@ import acknak  # noqa: E402
 import acknak_demo  # noqa: E402
 
 from sjson import SJSON  # noqa: E402
+from sjson.stream_state import StreamState  # noqa: E402
 
 ORDER = Path(__file__).parent / "fixtures" / "order.schema.json"
 
@@ -163,3 +164,45 @@ class TestFraming:
         a2.sendall(acknak._FRAME.pack(acknak.ACK, 0, 1) + b"x")
         with pytest.raises(acknak.LinkError, match="wrong size"):
             other._read(1)
+
+
+class TestRecovery:
+    def _pair(self) -> tuple:
+        a, b = socket.socketpair()
+        return a, acknak.AckNakLink(b, SJSON(sender_id=2), peer_id=1)
+
+    def _answer(self, a: socket.socket) -> tuple:
+        header = a.recv(acknak._FRAME.size)
+        kind, number, length = acknak._FRAME.unpack(header)
+        return kind, number, a.recv(length) if length else b""
+
+    def test_out_of_sync_stream_asks_for_reset(self) -> None:
+        a, link = self._pair()
+        sender = SJSON(sender_id=1, stateful=True)
+        first = sender.to_binary({"v": 1.5}).tobytes()
+        second = sender.to_binary({"v": 1.5}).tobytes()  # a cache hit
+        link._incoming(acknak.DATA, 0, first)
+        assert self._answer(a)[0] == acknak.ACK
+        link.codec = SJSON(sender_id=2)  # forgot the stream, but...
+        link.codec._streams[1] = (  # ...believes it is in sequence
+            StreamState(3),
+            2,
+        )
+        link._incoming(acknak.DATA, 1, second)
+        assert self._answer(a)[0] == acknak.NAK_RESET
+
+    def test_bad_dict_is_answered(self) -> None:
+        a, link = self._pair()
+        sender = SJSON(sender_id=1)
+        link._incoming(acknak.DATA, 0, sender.to_binary({"alpha": 1}).tobytes())
+        assert self._answer(a)[0] == acknak.NAK_DICT
+        link._incoming(acknak.DICT, 0, b"\xff")  # truncated
+        assert self._answer(a)[0] == acknak.NAK_RESEND
+        assert link._held == {}
+
+    def test_only_the_latest_packet_is_held(self) -> None:
+        a, link = self._pair()
+        sender = SJSON(sender_id=1)
+        link._incoming(acknak.DATA, 0, sender.to_binary({"alpha": 1}).tobytes())
+        link._incoming(acknak.DATA, 1, sender.to_binary({"beta": 1}).tobytes())
+        assert list(link._held) == [1]

@@ -316,3 +316,15 @@ class TestOptionalSenderId:
         packet = left.to_binary({"mine": 2})
         right.load_dictionary(left.nak_dictionary(0, 0, 0))
         assert right.to_value(packet) == {"mine": 2}
+
+    def test_link_id_cannot_be_own_id(self) -> None:
+        """A packet without an id must not be filed under the receiver's own id."""
+        sender = SJSON(sender_id=7, stateful=True)
+        receiver = SJSON(sender_id=0)
+        packet = sender.to_binary({"a": 1})
+        with pytest.raises(ValueError, match="own id"):
+            receiver.to_value(packet)
+        assert receiver.to_value(packet, sender_id=1) == {"a": 1}
+
+    def test_random_ids_are_never_zero(self) -> None:
+        assert all(SJSON().sender_id != 0 for _ in range(2000))

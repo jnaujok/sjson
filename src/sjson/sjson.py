@@ -85,7 +85,11 @@ class PacketHeader:
     header_length: int
     sequence: int | None = None
     cache_width: int | None = None
-    sender_present: bool = True
+
+    @property
+    def sender_present(self) -> bool:
+        """Whether the packet carries its sender id."""
+        return bool(self.flags & SJSON.FLAG_SENDER)
 
     @property
     def message_length(self) -> int:
@@ -200,7 +204,9 @@ class SJSON:
         # Receiving side: per sender, its stream state and the next sequence.
         self._streams: dict[int, tuple[StreamState, int]] = {}
         # TODO: Get the sender id from the config file
-        self.sender_id = randint(0, 0xFFFF) if sender_id is None else sender_id
+        # A random id is never 0: 0 is the default a receiver gives packets
+        # that carry no sender id.
+        self.sender_id = randint(1, 0xFFFF) if sender_id is None else sender_id
         if not 0 <= self.sender_id <= 0xFFFF:
             raise ValueError("sender_id must fit in 16 bits")
         if schema is not None and dictionary is not None:
@@ -301,7 +307,6 @@ class SJSON:
             reader.pos,
             sequence,
             cache_width,
-            present,
         )
 
     @classmethod
@@ -437,6 +442,11 @@ class SJSON:
             Any: The decoded JSON object.
         """
         header = self.read_header(bits, sender_id)
+        if not header.sender_present and header.sender_id == self.sender_id:
+            raise ValueError(
+                f"Packet without a sender id attributed to {sender_id}, this "
+                "endpoint's own id: pass another sender_id for the link"
+            )
         message_length = header.message_length
         if len(bits) < message_length + 32:
             raise ValueError("Truncated message")
@@ -603,6 +613,11 @@ class SJSON:
         knows (see :meth:`last_known_tag` and :meth:`last_known_value`). If it
         has never seen this sender before, both are zero and the whole
         dictionary is sent.
+
+        An endpoint that leaves its sender id out of its packets answers every
+        NAK with its own dictionary, under the id the peer asked with (the peer
+        cannot know our real id). Such an endpoint therefore cannot relay
+        another sender's dictionary; use ``include_sender_id=True`` for that.
 
         Args:
             sender_id (int): The sender whose dictionary is requested.

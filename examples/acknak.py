@@ -76,6 +76,11 @@ _FRAME = struct.Struct(">BHI")
 _NAK_DICT = struct.Struct(">HII")
 
 
+def _flags(packet: BitArray) -> int:
+    """The flag bits of a packet (0 if it is too short to have any)."""
+    return packet[4:8].uint if len(packet) >= 8 else 0
+
+
 class LinkError(RuntimeError):
     """The peer cannot decode our messages, or the link closed."""
 
@@ -219,9 +224,16 @@ class AckNakLink:
 
     def _incoming(self, kind: int, number: int, payload: bytes) -> None:
         if kind == DATA:
-            self._held[number] = BitArray(bytes=payload)
+            # Stop-and-wait: a new message means the sender gave up on any
+            # earlier one, so only this packet is kept.
+            self._held = {number: BitArray(bytes=payload)}
         elif kind == DICT:
-            self.codec.load_dictionary(BitArray(bytes=payload))
+            try:
+                self.codec.load_dictionary(BitArray(bytes=payload))
+            except Exception:  # damaged or contradicting names: start over
+                if self._held.pop(number, None) is not None:
+                    self._write(NAK_RESEND, number)
+                return
         else:
             return  # an answer nobody is waiting for
         packet = self._held.get(number)
@@ -253,9 +265,17 @@ class AckNakLink:
                     self.codec.last_known_value(sender),
                 ),
             )
-        except Exception:  # CRC mismatch, truncation, a mangled header
+        except Exception as error:
             del self._held[number]
-            self._write(NAK_RESEND, number)
+            message = str(error)
+            damaged = "CRC" in message or "Truncated" in message
+            stream = SJSON.FLAG_STATEFUL & _flags(packet)
+            if stream and not damaged:
+                # The packet is intact but our stream state does not fit it
+                # (out of sync): start the stream again.
+                self._write(NAK_RESET, number)
+            else:  # CRC mismatch, truncation, a mangled header
+                self._write(NAK_RESEND, number)
         else:
             del self._held[number]
             self._last_delivered = number
