@@ -22,6 +22,10 @@ __all__ = [
     "NullNode",
     "ArrayNode",
     "ObjectNode",
+    "SJSON",
+    "TagDictionary",
+    "UnknownSchemaError",
+    "load_schema",
 ]
 
 from .node import Node
@@ -31,3 +35,6 @@ from .boolean_node import BooleanNode
 from .null_node import NullNode
 from .array_node import ArrayNode
 from .object_node import ObjectNode
+from .schema import load_schema
+from .sjson import SJSON, UnknownSchemaError
+from .tag_dictionary import TagDictionary

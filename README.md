@@ -15,7 +15,49 @@ To truly use this library, there must be an "ACK/NAK" mechanism over the top of 
 Since this is a totally dynamic protocol, each receiver will need a dictionary stored for each sender.
 
 
-## Wire format (0.2)
+## Preloading the dictionary from a schema
+
+Normally the receiver learns field names by NAKing the first message it cannot
+decode. When both sides have the same JSON Schema or XSD, the dictionary can be
+built from it before anything is sent:
+
+```python
+from sjson.sjson import SJSON
+
+sender = SJSON(schema="order.schema.json")      # or "order.xsd"
+receiver = SJSON()
+receiver.register_schema("order.schema.json")
+
+packet = sender.to_binary(document)
+receiver.to_value(packet)   # decodes the first message, no NAK needed
+```
+
+Every property name in the schema is given an id, breadth first with required
+members before optional ones, so the most common fields get the smallest
+(5-bit) ids. Names the schema does not list are numbered after the schema's
+names and still travel through the normal NAK; a receiver NAKs with
+`receiver.last_known_tag(sender_id)`, so only those extra names are sent.
+
+Packets from a sender with a schema carry the schema's 32-bit fingerprint, a
+CRC of the whole loaded schema. A receiver that has not registered that schema
+raises `UnknownSchemaError` instead of decoding garbage.
+
+**JSON Schema** (drafts 4 to 2020-12): `properties`, `required`, `$ref`
+(local pointers and relative files, recursion included), `$defs` /
+`definitions`, `allOf`, `anyOf` / `oneOf`, `if` / `then` / `else`,
+`dependentSchemas`, `items` / `prefixItems`, `enum` / `const`, numeric bounds,
+`format`, and OpenAPI `nullable`. Remote `http(s)` references are not fetched.
+
+**XSD**: elements, attributes, named and anonymous types, `complexContent` and
+`simpleContent` extension and restriction, `group`, `attributeGroup`,
+`include` / `import` / `redefine` of local files, enumeration and range facets.
+XSD describes XML, so the JSON is expected to follow the `xmltodict`
+convention: the document is `{"rootElement": {...}}`, attributes are
+`"@name"`, element text next to attributes is `"#text"`, and repeated elements
+are arrays. The prefixes can be changed with `attribute_prefix` and
+`text_key`; pass `typed_values=False` if every value is a string.
+
+## Wire format (0.3)
 
 All variable-length integers use a **NybbleField**: a unary prefix that says how
 many nybbles follow.
@@ -36,6 +78,9 @@ many nybbles follow.
 | field | description |
 |:------|:------------|
 | 16 bits | sender identifier |
+| 4 bits | packet version (currently 1) |
+| 3 bits | flags; bit 0 set means a schema fingerprint follows |
+| 32 bits | schema fingerprint, only when flagged |
 | NybbleField | length of the encoded data in bits |
 | ... | the encoded JSON value |
 | 32 bits | CRC32 of the zero-padded bytes of everything above |
