@@ -15,14 +15,51 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 
 import threading
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from sjson.schema.model import SchemaModel
 
 
 class TagDictionary:
+    """
+    Maps field names (and interned strings such as URLs) to small integer ids.
+
+    A dictionary can be seeded from a schema with :meth:`from_schema`. The
+    seeded ids (``1..base_size``) are identical on every machine that loads
+    the same schema, so they never need to be exchanged; only names added
+    later have to be sent in response to a NAK.
+    """
+
     def __init__(self) -> None:
         self.last_index = 0
         self._tags: dict[str, int] = {}
         self._lookup: dict[int, str] = {}
         self.lock = threading.Lock()
+        self.base_size = 0
+        self.fingerprint: int | None = None
+        self.schema: "SchemaModel | None" = None
+
+    @classmethod
+    def from_schema(cls, schema: Any, **options: Any) -> "TagDictionary":
+        """
+        Build a dictionary pre-populated with every field name in a schema.
+
+        Args:
+            schema: A path to a JSON Schema or XSD file, a parsed JSON Schema
+                ``dict``, or a :class:`~sjson.schema.SchemaModel`.
+            options: Passed to the XSD loader (see :func:`sjson.schema.load_schema`).
+        """
+        from sjson.schema import load_schema
+
+        model = load_schema(schema, **options)
+        dictionary = cls()
+        for name in model.field_names():
+            dictionary.add(name)
+        dictionary.base_size = dictionary.last_index
+        dictionary.fingerprint = model.fingerprint
+        dictionary.schema = model
+        return dictionary
 
     def add(self, tag: str) -> int:
         """
