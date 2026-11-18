@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import socket
 import struct
+import time
 from collections import deque
 from typing import Any
 
@@ -107,6 +108,7 @@ class AckNakLink:
         self._number = 0
         self._held: dict[int, BitArray] = {}  # undecodable packets, by number
         self._last_delivered: int | None = None
+        self._buffer = bytearray()  # bytes of a frame not yet complete
         self.stats = {name: 0 for name in ("sent", "resent", "naks", "dict_bytes")}
 
     # -- framing ------------------------------------------------------------
@@ -114,22 +116,35 @@ class AckNakLink:
     def _write(self, kind: int, number: int, payload: bytes = b"") -> None:
         self.sock.sendall(_FRAME.pack(kind, number, len(payload)) + payload)
 
-    def _read_exact(self, size: int) -> bytes:
-        data = b""
-        while len(data) < size:
-            chunk = self.sock.recv(size - len(data))
+    def _read(self, timeout: float | None) -> tuple[int, int, bytes]:
+        """
+        The next whole frame. Raises ``socket.timeout`` if none completes in
+        ``timeout`` seconds; the bytes already received are kept, so the next
+        call carries on with the same frame.
+        """
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            if len(self._buffer) >= _FRAME.size:
+                kind, number, length = _FRAME.unpack_from(self._buffer)
+                end = _FRAME.size + length
+                if len(self._buffer) >= end:
+                    payload = bytes(self._buffer[_FRAME.size : end])
+                    del self._buffer[:end]
+                    return kind, number, payload
+            if deadline is None:
+                self.sock.settimeout(None)
+            else:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise socket.timeout("no complete frame")
+                self.sock.settimeout(remaining)
+            try:
+                chunk = self.sock.recv(65536)
+            finally:
+                self.sock.settimeout(None)
             if not chunk:
                 raise LinkError("link closed")
-            data += chunk
-        return data
-
-    def _read(self, timeout: float | None) -> tuple[int, int, bytes]:
-        self.sock.settimeout(timeout)
-        try:
-            kind, number, length = _FRAME.unpack(self._read_exact(_FRAME.size))
-        finally:
-            self.sock.settimeout(None)
-        return kind, number, self._read_exact(length)
+            self._buffer += chunk
 
     # -- sending ------------------------------------------------------------
 

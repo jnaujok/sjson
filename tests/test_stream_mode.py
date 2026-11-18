@@ -303,3 +303,16 @@ class TestOptionalSenderId:
             packet = sender.to_binary(doc)
             assert SJSON.read_header(packet).sender_id == 7
             assert receiver.to_value(packet) == doc
+
+    def test_nak_answers_with_own_names_when_ids_collide(self) -> None:
+        """Both peers omit ids and call each other 0: a NAK still gets our names."""
+        left = SJSON(sender_id=1, include_sender_id=False)
+        right = SJSON(sender_id=2, include_sender_id=False)
+        # left learns right's names under link id 0 ...
+        packet = right.to_binary({"theirs": 1})
+        left.load_dictionary(right.nak_dictionary(0, 0, 0))
+        assert left.to_value(packet) == {"theirs": 1}
+        # ... and must still answer right's NAK (also under 0) with its own.
+        packet = left.to_binary({"mine": 2})
+        right.load_dictionary(left.nak_dictionary(0, 0, 0))
+        assert right.to_value(packet) == {"mine": 2}

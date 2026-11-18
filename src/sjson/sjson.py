@@ -622,10 +622,12 @@ class SJSON:
         """
         tags: list[tuple[int, str]] = []
         values: list[tuple[int, str]] = []
-        dictionary = self.sender_dictionaries.get(sender_id)
-        if dictionary is None and not self.include_sender_id:
+        if self.include_sender_id:
+            dictionary = self.sender_dictionaries.get(sender_id)
+        else:
             # Our packets carry no sender id, so the peer asks under whatever
-            # id it gave this link: answer with our own dictionary.
+            # id it gave this link (which may be the id we give the peer's
+            # own packets): always answer with our own dictionary.
             dictionary = self.sender_dictionaries.get(self.sender_id)
         if dictionary is not None:
             tags = dictionary.get_tags(last_tag_id)

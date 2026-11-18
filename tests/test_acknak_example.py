@@ -135,3 +135,19 @@ class TestLink:
         b.close()
         with pytest.raises(acknak.LinkError, match="closed"):
             link.receive()
+
+
+class TestFraming:
+    def test_frame_split_across_a_timeout(self) -> None:
+        a, b = socket.socketpair()
+        link = acknak.AckNakLink(b, SJSON())
+        frame = acknak._FRAME.pack(acknak.ACK, 7, 3) + b"xyz"
+        a.sendall(frame[:4])
+        with pytest.raises(socket.timeout):
+            link._read(0.05)
+        a.sendall(frame[4:9])
+        with pytest.raises(socket.timeout):  # stalls mid-payload
+            link._read(0.05)
+        a.sendall(frame[9:] + frame)
+        assert link._read(1) == (acknak.ACK, 7, b"xyz")
+        assert link._read(1) == (acknak.ACK, 7, b"xyz")

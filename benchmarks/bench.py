@@ -77,7 +77,8 @@ def sjson_run(test, train=(), sender_kwargs=None, receiver_setup=None):
             decoded = receiver.to_value(packet, sender_id=1)
         assert decoded == message, "round trip failed"
     return {
-        "bytes": total,
+        "bytes": total + nak_bytes,  # dictionary answers are traffic too
+        "packet_bytes": total,
         "nak_bytes": nak_bytes,
         "schema_encoded": schema_encoded,
         "msgs_per_s": len(test) / encode_seconds if encode_seconds else 0,

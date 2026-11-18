@@ -15,10 +15,14 @@ from uci_gen import UciTraffic
 NS = "https://www.vdl.afrl.af.mil/programs/oam"
 
 
-def text(value):
+def lexical(value):
     if isinstance(value, bool):
         return "true" if value else "false"
-    return escape(str(value) if not isinstance(value, float) else repr(value))
+    return str(value) if not isinstance(value, float) else repr(value)
+
+
+def text(value):
+    return escape(lexical(value))
 
 
 def element(name, value, out, root=False):
@@ -30,7 +34,7 @@ def element(name, value, out, root=False):
     if not isinstance(value, dict):
         out.append(f"<{name}{ns}>{text(value)}</{name}>")
         return
-    attrs = "".join(f" {k[1:]}={quoteattr(text(v))}" for k, v in value.items() if k.startswith("@"))
+    attrs = "".join(f" {k[1:]}={quoteattr(lexical(v))}" for k, v in value.items() if k.startswith("@"))
     children = [(k, v) for k, v in value.items() if not k.startswith("@") and k != "#text"]
     body = text(value["#text"]) if "#text" in value else ""
     if not children and not body:
