@@ -196,9 +196,30 @@ class TestRecovery:
         sender = SJSON(sender_id=1)
         link._incoming(acknak.DATA, 0, sender.to_binary({"alpha": 1}).tobytes())
         assert self._answer(a)[0] == acknak.NAK_DICT
-        link._incoming(acknak.DICT, 0, b"\xff")  # truncated
-        assert self._answer(a)[0] == acknak.NAK_RESEND
-        assert link._held == {}
+        # A DICT that cannot be loaded: forget what was learnt from the
+        # sender and ask again from the base.
+        link._incoming(acknak.DICT, 0, b"\x00\x01\xff")  # truncated
+        kind, _, payload = self._answer(a)
+        assert kind == acknak.NAK_DICT
+        assert acknak._NAK_DICT.unpack(payload) == (1, 0, 0)
+        assert list(link._held) == [0]
+
+    def test_version_or_own_id_is_fatal(self) -> None:
+        a, link = self._pair()
+        link.codec = SJSON(sender_id=1)  # our own id is the link's id
+        packet = SJSON(sender_id=9, stateful=True).to_binary({"a": 1})
+        link._incoming(acknak.DATA, 0, packet.tobytes())
+        assert self._answer(a)[0] == acknak.NAK_FATAL
+
+    def test_unknown_frame_type_ends_the_link(self) -> None:
+        a, link = self._pair()
+        a.sendall(acknak._FRAME.pack(9, 0, 0))
+        with pytest.raises(acknak.LinkError, match="unknown frame type"):
+            link._read(1)
+
+    def test_numbering_starts_at_random(self) -> None:
+        starts = {self._pair()[1]._number for _ in range(20)}
+        assert len(starts) > 1
 
     def test_only_the_latest_packet_is_held(self) -> None:
         a, link = self._pair()

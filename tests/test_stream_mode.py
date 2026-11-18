@@ -328,3 +328,12 @@ class TestOptionalSenderId:
 
     def test_random_ids_are_never_zero(self) -> None:
         assert all(SJSON().sender_id != 0 for _ in range(2000))
+
+    def test_own_stream_packet_heard_back_is_refused(self) -> None:
+        echo = SJSON(sender_id=1, stateful=True, include_sender_id=True)
+        packet = echo.to_binary({"a": 1})
+        with pytest.raises(ValueError, match="own id"):
+            echo.to_value(packet)
+        # Stateless packets of our own still decode (loopback).
+        plain = SJSON(sender_id=1)
+        assert plain.to_value(plain.to_binary({"b": 2})) == {"b": 2}

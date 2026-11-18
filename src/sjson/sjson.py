@@ -442,10 +442,15 @@ class SJSON:
             Any: The decoded JSON object.
         """
         header = self.read_header(bits, sender_id)
-        if not header.sender_present and header.sender_id == self.sender_id:
+        if header.sender_id == self.sender_id and (
+            not header.sender_present or header.sequence is not None
+        ):
+            # A peer's packets filed under our own id would mix its names
+            # into our sending dictionary, and a stream packet of our own (a
+            # broadcast heard back) would reset it.
             raise ValueError(
-                f"Packet without a sender id attributed to {sender_id}, this "
-                "endpoint's own id: pass another sender_id for the link"
+                f"Packet attributed to sender {header.sender_id}, this endpoint's "
+                "own id: pass another sender_id for the link"
             )
         message_length = header.message_length
         if len(bits) < message_length + 32:

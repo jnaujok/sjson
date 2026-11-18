@@ -54,6 +54,7 @@ control frame of the wrong size, ends the link with :class:`LinkError`.
 
 from __future__ import annotations
 
+import random
 import socket
 import struct
 import time
@@ -117,7 +118,9 @@ class AckNakLink:
         self.retries = retries
         self.max_frame = max_frame
         self.inbox: deque[Any] = deque()
-        self._number = 0
+        # Start numbering at random, so a restarted sender's first message is
+        # not mistaken for a resend of the last one delivered.
+        self._number = random.randrange(0x10000)
         self._held: dict[int, BitArray] = {}  # undecodable packets, by number
         self._last_delivered: int | None = None
         self._buffer = bytearray()  # bytes of a frame not yet complete
@@ -138,6 +141,8 @@ class AckNakLink:
         while True:
             if len(self._buffer) >= _FRAME.size:
                 kind, number, length = _FRAME.unpack_from(self._buffer)
+                if not DATA <= kind <= NAK_FATAL:
+                    raise LinkError(f"unknown frame type {kind}")
                 if length > self.max_frame:
                     raise LinkError(f"frame too long: {length} bytes")
                 if (kind in (ACK, NAK_RESET, NAK_RESEND) and length) or (
@@ -203,13 +208,13 @@ class AckNakLink:
                 data = update.tobytes()
                 self.stats["dict_bytes"] += len(data)
                 self._write(DICT, number, data)
-            elif kind == NAK_RESET:
+            elif kind == NAK_RESET and self.codec.stateful:
                 # The peer lost the stream: start it again from sequence 0.
                 self.codec.reset_stream()
                 packet = self.codec.to_binary(document).tobytes()
                 self._write(DATA, number, packet)
                 self.stats["resent"] += len(packet)
-            elif kind == NAK_RESEND:
+            else:  # NAK_RESEND (or NAK_RESET to a stateless sender)
                 self._write(DATA, number, packet)
                 self.stats["resent"] += len(packet)
 
@@ -230,10 +235,14 @@ class AckNakLink:
         elif kind == DICT:
             try:
                 self.codec.load_dictionary(BitArray(bytes=payload))
-            except Exception:  # damaged or contradicting names: start over
-                if self._held.pop(number, None) is not None:
-                    self._write(NAK_RESEND, number)
-                return
+            except Exception:
+                # The names contradict what we learnt (the sender restarted)
+                # or the DICT is damaged: forget what we learnt from that
+                # sender; the retry below NAKs for everything after the
+                # pre-loaded entries.
+                if len(payload) >= 2:
+                    sender = int.from_bytes(payload[:2], "big")
+                    self.codec.get_dictionary(sender).reset_to_base()
         else:
             return  # an answer nobody is waiting for
         packet = self._held.get(number)
@@ -270,7 +279,11 @@ class AckNakLink:
             message = str(error)
             damaged = "CRC" in message or "Truncated" in message
             stream = SJSON.FLAG_STATEFUL & _flags(packet)
-            if stream and not damaged:
+            if "version" in message or "own id" in message:
+                # Resending cannot help: a version we do not speak, or a
+                # link id that is our own.
+                self._write(NAK_FATAL, number, message.encode("utf-8"))
+            elif stream and not damaged:
                 # The packet is intact but our stream state does not fit it
                 # (out of sync): start the stream again.
                 self._write(NAK_RESET, number)
