@@ -61,7 +61,38 @@ convention: the document is `{"rootElement": {...}}`, attributes are
 are arrays. The prefixes can be changed with `attribute_prefix` and
 `text_key`; pass `typed_values=False` if every value is a string.
 
-## Wire format (0.4)
+## Schema-driven encoding
+
+With a schema on both sides, SJSON also skips everything the schema already
+says. Field tags and type codes are left out, and the members of an object are
+written in schema order:
+
+| schema type | encoding |
+|:------------|:---------|
+| `enum` / `const` | index into the list, ceil(log2 n) bits (a `const` takes 0 bits) |
+| boolean | 1 bit |
+| integer with `minimum` and `maximum` | `value - minimum` in just enough bits |
+| integer with `minimum` >= 0 | NybbleField of `value - minimum` |
+| other numbers | the number payload without its type code |
+| string | the string payload without its type code |
+| array with `items` | NybbleField count, then each item |
+| object | one presence bit per optional member, then the members; if other members are allowed, one more bit and, when set, the extra members tagged as usual |
+| `anyOf`, mixed types, tuples, untyped | the ordinary tagged encoding |
+
+A nullable type (`["string", "null"]`, OpenAPI `nullable`) costs one extra bit.
+
+This is on by default whenever the sender has a schema. Each document is
+checked as it is encoded. A document that does not fit the schema (a wrong
+type, a missing required member, a value outside the `enum` or its bounds, or
+an unexpected member in a closed object) is sent with the tagged encoding
+instead, so nothing is ever lost. Pass `SJSON(schema=..., schema_encoding=False)`
+to always use the tagged encoding. Decoded objects list their members in
+schema order, which can differ from the order in the original document.
+
+The sample order in the tests goes from 254 bytes of JSON to 89 bytes tagged
+and 71 bytes schema-encoded (packet header and CRC included).
+
+## Wire format (0.5)
 
 All variable-length integers use a **NybbleField**: a unary prefix that says how
 many nybbles follow.
@@ -83,7 +114,7 @@ many nybbles follow.
 |:------|:------------|
 | 16 bits | sender identifier |
 | 4 bits | packet version (currently 1) |
-| 3 bits | flags; bit 0 set means a schema fingerprint follows |
+| 3 bits | flags; bit 0: a schema fingerprint follows; bit 1: the data uses the schema-driven encoding |
 | 32 bits | schema fingerprint, only when flagged |
 | NybbleField | length of the encoded data in bits |
 | ... | the encoded JSON value |

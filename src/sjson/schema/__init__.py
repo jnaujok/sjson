@@ -22,12 +22,15 @@ receiver can build identical dictionaries without exchanging them.
 from pathlib import Path
 from typing import Any
 
+from sjson.schema.codec import NonConformingError, SchemaCodec
 from sjson.schema.json_schema_loader import JsonSchemaLoader, SchemaLoadError
 from sjson.schema.model import Property, SchemaModel, SchemaType
 from sjson.schema.xsd_loader import XsdLoader
 
 __all__ = [
     "JsonSchemaLoader",
+    "NonConformingError",
+    "SchemaCodec",
     "Property",
     "SchemaLoadError",
     "SchemaModel",
