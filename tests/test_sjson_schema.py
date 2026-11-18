@@ -74,15 +74,19 @@ class TestSchemaPreloadedSJSON:
         known = receiver.last_known_tag(sender.get_sender_id())
         base = sender.get_dictionary(sender.get_sender_id()).base_size
         assert known == base
-        update = sender.nak_dictionary(sender.get_sender_id(), known)
+        known_value = receiver.last_known_value(sender.get_sender_id())
+        update = sender.nak_dictionary(sender.get_sender_id(), known, known_value)
         receiver.load_dictionary(update)
         assert receiver.to_value(packet) == document
-        # Only the names outside the schema (and the interned URL) were sent.
-        sent = sender.get_dictionary(sender.get_sender_id()).get_tags(known)
-        assert [name for _, name in sent] == [
+        # Only the names and values outside the schema were sent.
+        dictionary = sender.get_dictionary(sender.get_sender_id())
+        assert [name for _, name in dictionary.get_tags(known)] == [
             "extraField",
             "link",
-            "https://example.com/a",
+        ]
+        assert dictionary.values is not None
+        assert [v for _, v in dictionary.values.get_tags(known_value)] == [
+            "https://example.com/a"
         ]
 
     def test_unregistered_schema(self) -> None:

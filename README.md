@@ -38,6 +38,10 @@ members before optional ones, so the most common fields get the smallest
 names and still travel through the normal NAK; a receiver NAKs with
 `receiver.last_known_tag(sender_id)`, so only those extra names are sent.
 
+String values listed in `enum` / `const` (JSON Schema) or `xs:enumeration`
+(XSD) are preloaded into the value dictionary the same way, so a value such as
+`"SHIPPED"` is sent as a 5- or 10-bit id.
+
 Packets from a sender with a schema carry the schema's 32-bit fingerprint, a
 CRC of the whole loaded schema. A receiver that has not registered that schema
 raises `UnknownSchemaError` instead of decoding garbage.
@@ -57,7 +61,7 @@ convention: the document is `{"rootElement": {...}}`, attributes are
 are arrays. The prefixes can be changed with `attribute_prefix` and
 `text_key`; pass `typed_values=False` if every value is a string.
 
-## Wire format (0.3)
+## Wire format (0.4)
 
 All variable-length integers use a **NybbleField**: a unary prefix that says how
 many nybbles follow.
@@ -95,9 +99,14 @@ whole bytes in transit still decodes.
 | 16 bits | sender identifier |
 | NybbleField | number of tags |
 | per tag | NybbleField tag id, NybbleField UTF-8 byte length, UTF-8 bytes |
+| NybbleField | number of interned values |
+| per value | NybbleField value id, NybbleField UTF-8 byte length, UTF-8 bytes |
 
 Tag 0 means "unnamed"; field names are numbered from 1 in the order they are
-first seen.
+first seen. Interned string values (URLs, and strings a schema enumerates) have
+their own id space, also starting at 1, so they never push field names onto
+longer ids. A receiver NAKs with `last_known_tag(sender_id)` and
+`last_known_value(sender_id)` and receives only what it is missing.
 
 ### Values
 
@@ -133,7 +142,7 @@ shortest is kept.
 | code | form | payload |
 |:----:|:-----|:--------|
 | 0000 | UUID | hyphen bit + upper-case bit + 128 bits |
-| 0001 | URL | NybbleField id in the tag dictionary |
+| 0001 | interned | NybbleField id in the value dictionary (URLs, enumerated values) |
 | 0010 | LZ4 block | NybbleField raw bytes + NybbleField packed bytes + data |
 | 0011-0110 | range coded, 4-7 bits | NybbleField length + NybbleField base + (code point - base) per character |
 | 0111 | empty string | none |
