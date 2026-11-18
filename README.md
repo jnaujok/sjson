@@ -155,7 +155,7 @@ many nybbles follow.
 | field | description |
 |:------|:------------|
 | 16 bits | sender identifier |
-| 4 bits | packet version (currently 1) |
+| 4 bits | packet version (currently 2); peers reject versions they do not know |
 | 3 bits | flags; bit 0: a schema fingerprint follows; bit 1: the data uses the schema-driven encoding |
 | 32 bits | schema fingerprint, only when flagged |
 | NybbleField | length of the encoded data in bits |

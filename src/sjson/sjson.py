@@ -65,7 +65,12 @@ class SJSON:
     every value type) is documented in the project README.
     """
 
-    VERSION: int = 1
+    # Packet format version. Bumped whenever a packet's meaning changes, so
+    # that peers with an older implementation reject it instead of
+    # misreading it:
+    #   1 - version and flag bits introduced (0.3)
+    #   2 - interned value dictionary (0.4) and schema-driven encoding (0.5)
+    VERSION: int = 2
     VERSION_BITS: int = 4
     FLAG_BITS: int = 3
     FLAG_SCHEMA: int = 0b001
