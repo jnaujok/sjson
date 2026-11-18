@@ -232,6 +232,13 @@ class SJSON:
             return 0
         return self.sender_dictionaries[sender_id].last_index
 
+    def last_known_value(self, sender_id: int) -> int:
+        """The highest interned value id known for a sender."""
+        dictionary = self.sender_dictionaries.get(sender_id)
+        if dictionary is None or dictionary.values is None:
+            return 0
+        return dictionary.values.last_index
+
     def get_dictionary(self, sender_id: int) -> TagDictionary:
         """
         Given a sender ID, this method returns the associated dictionary of tags.
@@ -248,16 +255,21 @@ class SJSON:
             self.sender_dictionaries[sender_id] = TagDictionary()
         return self.sender_dictionaries[sender_id]
 
-    def nak_dictionary(self, sender_id: int, last_tag_id: int) -> BitArray:
+    def nak_dictionary(
+        self, sender_id: int, last_tag_id: int, last_value_id: int = 0
+    ) -> BitArray:
         """
         When used in a streaming situation, the receiver may NAK a request for a
-        dictionary update, with the highest numbered tag they know. If they've
-        never seen this sender before, then the NAK will be for a zero tag, and
-        the whole dictionary is sent.
+        dictionary update, with the highest numbered tag and interned value it
+        knows (see :meth:`last_known_tag` and :meth:`last_known_value`). If it
+        has never seen this sender before, both are zero and the whole
+        dictionary is sent.
 
         Args:
             sender_id (int): The sender whose dictionary is requested.
             last_tag_id (int): The highest numbered tag the receiver knows.
+            last_value_id (int): The highest numbered interned value the
+                receiver knows.
 
         Returns:
             BitArray: A bitstream containing the response to the NAK.
@@ -266,20 +278,25 @@ class SJSON:
             | 16 bits | Sender ID |
             | NybbleField | Number of tags being returned |
             | per tag | NybbleField tag id + NybbleField byte length + UTF-8 |
+            | NybbleField | Number of interned values being returned |
+            | per value | NybbleField value id + NybbleField byte length + UTF-8 |
         """
-        tag_list: list[tuple[int, str]] = []
-        if sender_id in self.sender_dictionaries:
-            tag_list = self.sender_dictionaries[sender_id].get_tags(last_tag_id)
+        tags: list[tuple[int, str]] = []
+        values: list[tuple[int, str]] = []
+        dictionary = self.sender_dictionaries.get(sender_id)
+        if dictionary is not None:
+            tags = dictionary.get_tags(last_tag_id)
+            if dictionary.values is not None:
+                values = dictionary.values.get_tags(last_value_id)
 
-        ret_val = BitArray(uint=sender_id, length=16) + NybbleField.to_binary(
-            len(tag_list)
-        )
-        for tag_id, tag_name in tag_list:
-            str_bytes = tag_name.encode("utf-8")
-            ret_val.append(NybbleField.to_binary(tag_id))
-            ret_val.append(NybbleField.to_binary(len(str_bytes)))
-            ret_val.append(BitArray(bytes=str_bytes))
-
+        ret_val = BitArray(uint=sender_id, length=16)
+        for entries in (tags, values):
+            ret_val.append(NybbleField.to_binary(len(entries)))
+            for entry_id, text in entries:
+                data = text.encode("utf-8")
+                ret_val.append(NybbleField.to_binary(entry_id))
+                ret_val.append(NybbleField.to_binary(len(data)))
+                ret_val.append(BitArray(bytes=data))
         return ret_val
 
     def load_dictionary(self, ba: BitArray) -> None:
@@ -289,19 +306,24 @@ class SJSON:
 
         Args:
             ba (BitArray): The bitstream to load the dictionary from.
+
+        Raises:
+            ValueError: If an id is already assigned to a different string.
         """
         reader = BitReader(ba)
         sender_id = reader.read_uint(16)
-        tag_count = NybbleField.to_value(reader)
-        for _ in range(tag_count):
-            tag_id = NybbleField.to_value(reader)
-            name_length = NybbleField.to_value(reader)
-            tag_name = reader.read_bytes(name_length).decode("utf-8")
-
-            if sender_id != self.get_sender_id():
-                dictionary = self.get_dictionary(sender_id)
-                if dictionary.has_tag_id(tag_id):
-                    if dictionary.lookup(tag_id) != tag_name:
-                        raise ValueError(f"Tag/index collision: {tag_name}/{tag_id}")
+        dictionary = self.get_dictionary(sender_id)
+        targets = [dictionary, dictionary.values]
+        for target in targets:
+            count = NybbleField.to_value(reader)
+            for _ in range(count):
+                entry_id = NybbleField.to_value(reader)
+                length = NybbleField.to_value(reader)
+                text = reader.read_bytes(length).decode("utf-8")
+                if sender_id == self.get_sender_id() or target is None:
                     continue
-                dictionary.set(tag_name, tag_id)
+                if target.has_tag_id(entry_id):
+                    if target.lookup(entry_id) != text:
+                        raise ValueError(f"Tag/index collision: {text}/{entry_id}")
+                    continue
+                target.set(text, entry_id)

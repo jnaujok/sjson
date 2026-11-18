@@ -62,7 +62,7 @@ class StringNode(Node):
     | code | name      | payload                                               |
     |:----:|:----------|:------------------------------------------------------|
     | 0000 | UUID      | hyphen bit + upper-case bit + 128 bits                |
-    | 0001 | URL       | NybbleField tag id (interned in the tag dictionary)  |
+    | 0001 | INTERNED  | NybbleField id in the value dictionary (URLs, enums) |
     | 0010 | LZ4       | NybbleField raw bytes + NybbleField packed bytes + data |
     | 0011 | 4BIT      | range coded: NybbleField length + NybbleField base +  |
     | 0100 | 5BIT      |   ``length`` characters of (code point - base) in the |
@@ -85,7 +85,8 @@ class StringNode(Node):
 
     SPECIAL_HANDLING_LENGTH: int = 4
     SPECIAL_HANDLING_UUID: BitArray = BitArray(bin="0000")
-    SPECIAL_HANDLING_URL: BitArray = BitArray(bin="0001")
+    SPECIAL_HANDLING_INTERNED: BitArray = BitArray(bin="0001")
+    SPECIAL_HANDLING_URL: BitArray = SPECIAL_HANDLING_INTERNED
     SPECIAL_HANDLING_LZ4: BitArray = BitArray(bin="0010")
     SPECIAL_HANDLING_4BIT: BitArray = BitArray(bin="0011")
     SPECIAL_HANDLING_5BIT: BitArray = BitArray(bin="0100")
@@ -119,7 +120,8 @@ class StringNode(Node):
             value: The string value to store if not None
             bits: optional the bitstream representation of the string to initialize
                 from.
-            tag_dictionary: The tag dictionary used for interned (URL) strings.
+            tag_dictionary: The tag dictionary whose value dictionary holds
+                interned strings (URLs, enumerated values).
         """
         self.value: str = ""
         if value is not None:
@@ -133,8 +135,8 @@ class StringNode(Node):
         shortest applicable encoding.
 
         Args:
-            tag_dictionary: The tag dictionary to use for URL encoding
-                (if applicable).
+            tag_dictionary: The tag dictionary; its value dictionary is used
+                for interned strings.
 
         Raises:
             ValueError: If the string is set to None
@@ -160,10 +162,14 @@ class StringNode(Node):
             any(c.isupper() for c in value) and any(c.islower() for c in value)
         ):
             return cls._uuid_to_binary(value)
+        values = None if tag_dictionary is None else tag_dictionary.values
+        if values is not None and values.has_tag(value):
+            # Enumerated values and URLs seen before: a few bits.
+            return cls._interned_to_binary(values.get(value))
         if cls._is_url(value):
-            if tag_dictionary is None:
+            if values is None:
                 raise KeyError("Cannot encode a URL without a tag dictionary.")
-            return cls._url_to_binary(value, tag_dictionary)
+            return cls._interned_to_binary(values.add(value))
 
         candidates: list[BitArray] = [cls._encode_string(value)]
         encoders: tuple[Callable[[str], BitArray | None], ...] = (
@@ -222,8 +228,8 @@ class StringNode(Node):
         match code:
             case cls.SPECIAL_HANDLING_UUID.bin:
                 return cls._decode_uuid(reader)
-            case cls.SPECIAL_HANDLING_URL.bin:
-                return cls._decode_url(reader, tag_dictionary)
+            case cls.SPECIAL_HANDLING_INTERNED.bin:
+                return cls._decode_interned(reader, tag_dictionary)
             case cls.SPECIAL_HANDLING_LZ4.bin:
                 return cls._decode_lz4(reader)
             case cls.SPECIAL_HANDLING_4BIT.bin:
@@ -422,16 +428,14 @@ class StringNode(Node):
         )
 
     @classmethod
-    def _url_to_binary(cls, value: str, tag_dictionary: TagDictionary) -> BitArray:
+    def _interned_to_binary(cls, value_id: int) -> BitArray:
         """
-        Convert a URL to a lookup string, just like a field tag. This ensures that
-        any repeated URLs will be compressed to a few bits.
+        An interned string is sent as its id in the value dictionary, so any
+        repeated URL or enumerated value costs only a few bits.
         """
-        if tag_dictionary.has_tag(value):
-            tag_id = tag_dictionary.get(value)
-        else:
-            tag_id = tag_dictionary.add(value)
-        return cls._special(cls.SPECIAL_HANDLING_URL) + NybbleField.to_binary(tag_id)
+        return cls._special(cls.SPECIAL_HANDLING_INTERNED) + NybbleField.to_binary(
+            value_id
+        )
 
     ##############################
     #  Decoders
@@ -463,11 +467,13 @@ class StringNode(Node):
         )
 
     @staticmethod
-    def _decode_url(reader: BitReader, tag_dictionary: TagDictionary | None) -> str:
-        if tag_dictionary is None:
-            raise KeyError("Tag dictionary must be provided for URL decoding")
-        tag_id = NybbleField.to_value(reader)
-        return tag_dictionary.lookup_tag(tag_id)
+    def _decode_interned(
+        reader: BitReader, tag_dictionary: TagDictionary | None
+    ) -> str:
+        if tag_dictionary is None or tag_dictionary.values is None:
+            raise KeyError("Tag dictionary must be provided for interned strings")
+        value_id = NybbleField.to_value(reader)
+        return tag_dictionary.values.lookup_tag(value_id)
 
     @staticmethod
     def _decode_uuid(reader: BitReader) -> str:

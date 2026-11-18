@@ -23,15 +23,22 @@ if TYPE_CHECKING:
 
 class TagDictionary:
     """
-    Maps field names (and interned strings such as URLs) to small integer ids.
+    Maps field names to small integer ids. The companion :attr:`values`
+    dictionary does the same for interned string values (URLs and strings a
+    schema enumerates).
 
     A dictionary can be seeded from a schema with :meth:`from_schema`. The
-    seeded ids (``1..base_size``) are identical on every machine that loads
-    the same schema, so they never need to be exchanged; only names added
-    later have to be sent in response to a NAK.
+    seeded ids (``1..base_size``, in both dictionaries) are identical on every
+    machine that loads the same schema, so they never need to be exchanged;
+    only entries added later have to be sent in response to a NAK.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, with_values: bool = True) -> None:
+        """
+        Args:
+            with_values: Also create :attr:`values`, the companion dictionary of
+                interned string values. (The value dictionary itself has none.)
+        """
         self.last_index = 0
         self._tags: dict[str, int] = {}
         self._lookup: dict[int, str] = {}
@@ -39,6 +46,11 @@ class TagDictionary:
         self.base_size = 0
         self.fingerprint: int | None = None
         self.schema: "SchemaModel | None" = None
+        # Interned string values (URLs, enumerated strings) live in their own
+        # id space so that they do not push field names to longer ids.
+        self.values: "TagDictionary | None" = (
+            TagDictionary(with_values=False) if with_values else None
+        )
 
     @classmethod
     def from_schema(cls, schema: Any, **options: Any) -> "TagDictionary":
@@ -57,6 +69,10 @@ class TagDictionary:
         for name in model.field_names():
             dictionary.add(name)
         dictionary.base_size = dictionary.last_index
+        assert dictionary.values is not None
+        for value in model.enum_strings():
+            dictionary.values.add(value)
+        dictionary.values.base_size = dictionary.values.last_index
         dictionary.fingerprint = model.fingerprint
         dictionary.schema = model
         return dictionary
