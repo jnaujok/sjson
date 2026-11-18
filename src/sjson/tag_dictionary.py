@@ -14,8 +14,11 @@
 # License along with this library; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 
+import json
 import threading
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Iterable
+from zlib import crc32
 
 if TYPE_CHECKING:
     from sjson.schema.model import SchemaModel
@@ -65,17 +68,142 @@ class TagDictionary:
         from sjson.schema import load_schema
 
         model = load_schema(schema, **options)
+        return cls.from_names(model.field_names(), model.enum_strings(), model)
+
+    # -- pre-compiled dictionaries --------------------------------------
+
+    FILE_FORMAT: str = "sjson-dictionary"
+    FILE_VERSION: int = 1
+
+    @classmethod
+    def from_names(
+        cls,
+        names: Iterable[str],
+        values: Iterable[str] = (),
+        schema: "SchemaModel | None" = None,
+    ) -> "TagDictionary":
+        """
+        Build a dictionary from explicit lists: ``names`` get tag ids 1, 2, ...
+        and ``values`` get interned-value ids 1, 2, ... in the order given.
+        Duplicates are ignored. An optional ``schema`` enables schema-driven
+        encoding; the lists then replace the schema's own ordering.
+        """
         dictionary = cls()
-        for name in model.field_names():
+        for name in names:
             dictionary.add(name)
         dictionary.base_size = dictionary.last_index
         assert dictionary.values is not None
-        for value in model.enum_strings():
+        for value in values:
             dictionary.values.add(value)
         dictionary.values.base_size = dictionary.values.last_index
-        dictionary.fingerprint = model.fingerprint
-        dictionary.schema = model
+        dictionary.schema = schema
+        dictionary.fingerprint = dictionary.compute_fingerprint()
         return dictionary
+
+    def base_names(self) -> list[str]:
+        """The pre-loaded field names, in id order."""
+        return [self._lookup[i] for i in range(1, self.base_size + 1)]
+
+    def base_values(self) -> list[str]:
+        """The pre-loaded interned values, in id order."""
+        return [] if self.values is None else self.values.base_names()
+
+    def compute_fingerprint(self) -> int:
+        """
+        The fingerprint for the pre-loaded content. A dictionary holding
+        exactly what its schema would produce shares the schema's fingerprint,
+        so it interoperates with peers that load the schema itself. Anything
+        else is fingerprinted from its names, values and schema together.
+        """
+        if self.schema is not None and (
+            self.base_names() == self.schema.field_names()
+            and self.base_values() == self.schema.enum_strings()
+        ):
+            return self.schema.fingerprint
+        content = {
+            "tags": self.base_names(),
+            "values": self.base_values(),
+            "schema": None if self.schema is None else self.schema.canonical(),
+        }
+        text = json.dumps(content, sort_keys=True, separators=(",", ":"))
+        return crc32(text.encode("utf-8"))
+
+    def to_dict(self) -> dict[str, Any]:
+        """
+        The pre-loaded part of the dictionary (ids ``1..base_size``) as a
+        JSON-serialisable document. Entries learnt later are not included.
+        """
+        return {
+            "format": self.FILE_FORMAT,
+            "version": self.FILE_VERSION,
+            "fingerprint": self.compute_fingerprint(),
+            "tags": self.base_names(),
+            "values": self.base_values(),
+            "schema": None if self.schema is None else self.schema.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "TagDictionary":
+        """
+        Load a pre-compiled dictionary: the output of :meth:`to_dict`, a
+        ``{"tags": [...], "values": [...]}`` object, or a plain list of names.
+
+        Raises:
+            ValueError: If the document is malformed or its recorded
+                fingerprint does not match its content.
+        """
+        from sjson.schema.model import SchemaModel
+
+        if isinstance(data, list):
+            data = {"tags": data}
+        if not isinstance(data, dict):
+            raise ValueError("A compiled dictionary must be an object or a list")
+        if data.get("format", cls.FILE_FORMAT) != cls.FILE_FORMAT:
+            raise ValueError(f"Not an SJSON dictionary: {data.get('format')!r}")
+        if data.get("version", cls.FILE_VERSION) > cls.FILE_VERSION:
+            raise ValueError(f"Unsupported dictionary version: {data['version']}")
+        tags, values = data.get("tags", []), data.get("values", [])
+        for entries in (tags, values):
+            if not isinstance(entries, list) or not all(
+                isinstance(entry, str) for entry in entries
+            ):
+                raise ValueError("Dictionary tags and values must be string lists")
+            if len(set(entries)) != len(entries):
+                raise ValueError("Dictionary tags and values must be unique")
+        try:
+            schema = (
+                None
+                if data.get("schema") is None
+                else SchemaModel.from_dict(data["schema"])
+            )
+        except (KeyError, TypeError) as error:
+            raise ValueError(f"Malformed compiled schema: {error}")
+        dictionary = cls.from_names(tags, values, schema)
+        recorded = data.get("fingerprint")
+        if recorded is not None and recorded != dictionary.fingerprint:
+            raise ValueError(
+                "Dictionary fingerprint mismatch: the file was edited or corrupted"
+            )
+        return dictionary
+
+    def save(self, path: str | Path) -> None:
+        """Write :meth:`to_dict` to a JSON file."""
+        Path(path).write_text(json.dumps(self.to_dict(), indent=1), encoding="utf-8")
+
+    @classmethod
+    def load(cls, path: str | Path) -> "TagDictionary":
+        """Read a dictionary written by :meth:`save` (or a simpler form)."""
+        try:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise ValueError(f"Cannot read dictionary {path}: {error}")
+        return cls.from_dict(data)
+
+    def fresh_copy(self) -> "TagDictionary":
+        """A new dictionary holding only the pre-loaded entries."""
+        return TagDictionary.from_names(
+            self.base_names(), self.base_values(), self.schema
+        )
 
     def add(self, tag: str) -> int:
         """

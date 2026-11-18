@@ -61,6 +61,48 @@ convention: the document is `{"rootElement": {...}}`, attributes are
 are arrays. The prefixes can be changed with `attribute_prefix` and
 `text_key`; pass `typed_values=False` if every value is a string.
 
+## Pre-compiled dictionaries
+
+Instead of shipping and parsing the schema on every peer, compile the
+dictionary once and distribute the result, a small JSON file:
+
+```shell
+python -m sjson.compile --schema order.schema.json -o order.dict.json
+# or, once installed:
+sjson-compile --schema order.xsd -o order.dict.json
+```
+
+```python
+sender = SJSON(dictionary="order.dict.json")
+receiver = SJSON()
+receiver.register_dictionary("order.dict.json")
+```
+
+The file lists the field names and interned values in id order, plus the
+compiled schema model when there was one, so schema-driven encoding (below)
+still works. A dictionary compiled from a schema alone has the schema's
+fingerprint, so peers using the schema file and peers using the compiled file
+can talk to each other.
+
+Compiling from sample traffic gives better results. Field names are numbered
+by how often they occur, so the most frequent fields get the 5-bit ids, and
+strings that repeat can be interned:
+
+```shell
+python -m sjson.compile --schema order.schema.json \
+    --sample traffic.jsonl --intern-min-count 5 -o order.dict.json
+```
+
+Samples work without a schema as well. A `.jsonl` file holds one document per
+line; `--each` treats a top-level array in a `.json` file as a list of
+documents. The same is available in Python as
+`sjson.compile.compile_dictionary(schema=..., samples=..., intern_min_count=...)`,
+and as `TagDictionary.save()` / `TagDictionary.load()`. A plain JSON list of
+names, or `{"tags": [...], "values": [...]}`, is also accepted as a dictionary.
+Only the pre-loaded entries are saved; names a sender learns later still travel
+through the NAK. A dictionary without a schema is identified in packets by its
+own fingerprint, just like a schema.
+
 ## Schema-driven encoding
 
 With a schema on both sides, SJSON also skips everything the schema already
@@ -92,7 +134,7 @@ schema order, which can differ from the order in the original document.
 The sample order in the tests goes from 254 bytes of JSON to 89 bytes tagged
 and 71 bytes schema-encoded (packet header and CRC included).
 
-## Wire format (0.5)
+## Wire format (0.6)
 
 All variable-length integers use a **NybbleField**: a unary prefix that says how
 many nybbles follow.
