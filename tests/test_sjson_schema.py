@@ -68,6 +68,7 @@ class TestSchemaPreloadedSJSON:
         receiver = SJSON()
         receiver.register_schema(schema)
         document = dict(ORDER, extraField=1, link="https://example.com/a")
+        sender.to_binary(document)  # the URL is interned on its second sighting
         packet = sender.to_binary(document)
         with pytest.raises(KeyError):
             receiver.to_value(packet)

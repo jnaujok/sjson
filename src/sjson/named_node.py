@@ -21,7 +21,6 @@ from bitstring import BitArray
 from sjson.bit_reader import BitReader
 
 from sjson.node import Node
-from sjson.nybble_field import NybbleField
 from sjson.tag_dictionary import TagDictionary
 
 
@@ -78,15 +77,29 @@ class NamedNode(Node):
         reader, owned = BitReader.begin(bits)
         if len(reader) < 5:
             raise ValueError("Not enough bits for name and node")
-        tag_id: int = NybbleField.to_value(reader)
-        if tag_id == 0:
+        if reader.peek_bin(5) == "00000":
             raise ValueError("Named tag called with a nameless tag.")
-        if not tag_dictionary.has_tag_id(tag_id):
-            raise KeyError(f"Unknown tag ID: {tag_id}")
-        self.name = tag_dictionary.lookup(tag_id)
-        self.node = Node.from_bits(reader, tag_dictionary=tag_dictionary)
+        self.name = tag_dictionary.decode_id(reader)
+        self.decode_body(reader, tag_dictionary)
         reader.finish(bits, owned)
         return (self.name, self.node)
+
+    def decode_body(self, reader: BitReader, tag_dictionary: TagDictionary) -> None:
+        """Decode the value of a member whose name is already known."""
+        stream = tag_dictionary.stream
+        if stream is not None:
+            name = self.name
+
+            def plain(r: BitReader) -> Any:
+                stream.path.append(name)
+                value = Node.from_bits(r, tag_dictionary).get_value()
+                stream.path.pop()
+                return value
+
+            value = stream.decode(reader, stream.key(self.name), plain)
+            self.node = Node.from_value(value)
+        else:
+            self.node = Node.from_bits(reader, tag_dictionary=tag_dictionary)
 
     def get_name(self) -> str:
         """
@@ -134,18 +147,38 @@ class NamedNode(Node):
         bit_array: BitArray = BitArray()
 
         if self.node is not None and tag_dictionary is not None:
-            if tag_dictionary.has_tag(self.name):
-                tag_id = tag_dictionary.get(self.name)
-            else:
-                tag_id = tag_dictionary.add(self.name)
-            bit_array.append(NybbleField().to_binary(tag_id))
-            bit_array.append(self.node.to_binary(tag_dictionary=tag_dictionary))
+            bit_array.append(tag_dictionary.encode_id(self.name))
+            bit_array.append(self.encode_body(tag_dictionary))
         else:
             if self.node is None:
                 raise ValueError(f"The node for {self.name} is undefined.")
             else:
                 raise ValueError("Missing tag dictionary")
 
+        return bit_array
+
+    def encode_body(self, tag_dictionary: TagDictionary) -> BitArray:
+        """Encode the member's value (without its name)."""
+        assert self.node is not None
+        bit_array = BitArray()
+        stream = tag_dictionary.stream
+        value = self.node.get_value()
+        if stream is not None:
+            # Stream mode: every member value goes through the stream cache
+            # (its plain form carries the type code).
+            node, name = self.node, self.name
+
+            def plain() -> BitArray:
+                stream.path.append(name)
+                bits = node.to_binary(tag_dictionary=tag_dictionary)
+                stream.path.pop()
+                return bits
+
+            bit_array.append(
+                stream.encode(stream.key(self.name), value, plain, tag_dictionary)
+            )
+        else:
+            bit_array.append(self.node.to_binary(tag_dictionary=tag_dictionary))
         return bit_array
 
     def get_value(self) -> Any:

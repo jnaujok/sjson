@@ -134,7 +134,35 @@ schema order, which can differ from the order in the original document.
 The sample order in the tests goes from 254 bytes of JSON to 89 bytes tagged
 and 71 bytes schema-encoded (packet header and CRC included).
 
-## Wire format (0.7)
+## Stream mode
+
+On a link that delivers packets in order (TCP, WebSocket, a reliable message
+bus), turn on stream mode and both sides remember recent values:
+
+```python
+sender = SJSON(schema="order.schema.json", stateful=True)
+```
+
+- Every field keeps its 8 most recent values (`cache_width=3` bits). A value
+  seen recently costs 4 bits; whole objects, object shapes and the pattern of
+  optional members are cached the same way.
+- A changed value can be sent as a delta from a recent one: floats as the
+  difference (or XOR) of their bit patterns, integers and ISO-8601 timestamps
+  as a signed difference, other strings as a shared prefix plus a new suffix.
+  The encoder always picks the shortest form, and values stay exact.
+- Longer strings travel in a text channel: one zstd block per packet whose
+  compression context lasts for the whole stream.
+- New field names are defined inline, so a receiver never needs a NAK.
+- Each packet carries an 8-bit sequence number. A receiver that misses a packet
+  raises `StreamGapError`; the sender calls `reset_stream()` and the next
+  packet (sequence 0) starts both sides afresh. Only that first packet carries
+  the schema fingerprint.
+
+A dictionary compiled from samples also carries a small zstd dictionary trained
+on the samples' text. It warms the text channel in stream mode and gives
+per-message (non-stream) packets a text channel of their own.
+
+## Wire format (0.8)
 
 All variable-length integers use a **NybbleField**: a unary prefix that says how
 many nybbles follow.
@@ -155,8 +183,9 @@ many nybbles follow.
 | field | description |
 |:------|:------------|
 | 16 bits | sender identifier |
-| 4 bits | packet version (currently 3); peers reject versions they do not know |
-| 3 bits | flags; bit 0: a schema fingerprint follows; bit 1: the data uses the schema-driven encoding |
+| 4 bits | packet version (currently 4); peers reject versions they do not know |
+| 3 bits | flags; bit 0: a schema fingerprint follows; bit 1: the data uses the schema-driven encoding; bit 2: stream mode |
+| 8 + 3 bits | stream mode only: sequence number and cache width |
 | 32 bits | schema fingerprint, only when flagged |
 | NybbleField | length of the encoded data in bits |
 | ... | the encoded JSON value |
@@ -223,4 +252,5 @@ shortest is kept.
 | 1001 | hex | upper-case bit + NybbleField length + 4 bits per character |
 | 1010 | ISO-8601 date / date-time | day ordinal, second of day, fraction, zone |
 | 1011 | base64 | NybbleField byte count + decoded bytes |
-| 11xx | reserved | |
+| 1100 | text channel | none; the NUL-terminated bytes are in the packet's zstd text block |
+| 1101-1111 | reserved | |

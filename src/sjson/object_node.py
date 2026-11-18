@@ -21,6 +21,7 @@ from .node import Node
 from bitstring import BitArray
 
 from sjson.bit_reader import BitReader
+from sjson.nybble_field import NybbleField
 from typing import Any, Dict
 
 
@@ -96,6 +97,26 @@ class ObjectNode(Node):
 
         # Encode
         bits = BitArray(bin=self.get_binary_code())
+        stream = tag_dictionary.stream
+        if stream is not None:
+            # Stream mode: the member names (the object's shape) go through
+            # the stream cache, so a repeated shape costs a few bits and the
+            # members follow without tag ids or an end marker.
+            names = list(self.objects)
+
+            def plain_shape() -> BitArray:
+                shape = NybbleField.to_binary(len(names))
+                for name in names:
+                    shape.append(tag_dictionary.encode_id(name))
+                return shape
+
+            bits.append(stream.encode(stream.key("{}"), names, plain_shape))
+            for name, value in self.objects.items():
+                member = NamedNode(
+                    name=name, node=Node.from_value(value, tag_dictionary)
+                )
+                bits.append(member.encode_body(tag_dictionary))
+            return bits
         named_nodes: list[NamedNode] = []
         for name, node in self.objects.items():
             new_node = NamedNode(name=name, node=Node.from_value(node, tag_dictionary))
@@ -124,6 +145,21 @@ class ObjectNode(Node):
         if reader.peek_bin(3) != self.get_binary_code():
             raise ValueError("Invalid object type code")
         reader.read_uint(3)
+        stream = None if tag_dictionary is None else tag_dictionary.stream
+        if stream is not None:
+            assert tag_dictionary is not None
+            dictionary = tag_dictionary
+
+            def plain_shape(r: BitReader) -> list[str]:
+                return [dictionary.decode_id(r) for _ in range(NybbleField.to_value(r))]
+
+            for name in stream.decode(reader, stream.key("{}"), plain_shape):
+                member = NamedNode()
+                member.name = name
+                member.decode_body(reader, dictionary)
+                self.objects[name] = member.get_value()
+            reader.finish(bits, owned)
+            return self.objects
         while reader.peek_bin(5) != self.END_OF_MEMBERS:
             named_nodes.append(NamedNode(bits=reader, tag_dictionary=tag_dictionary))
         reader.read_uint(5)

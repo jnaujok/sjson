@@ -14,14 +14,21 @@
 # License along with this library; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 
+import base64
 import json
 import threading
+
+from bitstring import BitArray
+
+from sjson.bit_reader import BitReader
+from sjson.nybble_field import NybbleField
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable
 from zlib import crc32
 
 if TYPE_CHECKING:
     from sjson.schema.model import SchemaModel
+    from sjson.stream_state import StreamState, TextChannel
 
 
 class TagDictionary:
@@ -54,6 +61,14 @@ class TagDictionary:
         self.values: "TagDictionary | None" = (
             TagDictionary(with_values=False) if with_values else None
         )
+        # Set while encoding/decoding a stream-mode packet (see StreamState).
+        self.stream: "StreamState | None" = None
+        # Set while encoding/decoding a packet that has a text channel.
+        self.text: "TextChannel | None" = None
+        # Optional zstd dictionary for the text channel (raw bytes).
+        self.text_dictionary: bytes | None = None
+        # URLs seen once; a URL is interned the second time it is seen.
+        self.seen_urls: set[str] = set()
 
     @classmethod
     def from_schema(cls, schema: Any, **options: Any) -> "TagDictionary":
@@ -81,6 +96,7 @@ class TagDictionary:
         names: Iterable[str],
         values: Iterable[str] = (),
         schema: "SchemaModel | None" = None,
+        text_dictionary: bytes | None = None,
     ) -> "TagDictionary":
         """
         Build a dictionary from explicit lists: ``names`` get tag ids 1, 2, ...
@@ -97,6 +113,7 @@ class TagDictionary:
             dictionary.values.add(value)
         dictionary.values.base_size = dictionary.values.last_index
         dictionary.schema = schema
+        dictionary.text_dictionary = text_dictionary
         dictionary.fingerprint = dictionary.compute_fingerprint()
         return dictionary
 
@@ -115,8 +132,10 @@ class TagDictionary:
         so it interoperates with peers that load the schema itself. Anything
         else is fingerprinted from its names, values and schema together.
         """
-        if self.schema is not None and (
-            self.base_names() == self.schema.field_names()
+        if (
+            self.schema is not None
+            and self.text_dictionary is None
+            and self.base_names() == self.schema.field_names()
             and self.base_values() == self.schema.enum_strings()
         ):
             return self.schema.fingerprint
@@ -125,6 +144,8 @@ class TagDictionary:
             "values": self.base_values(),
             "schema": None if self.schema is None else self.schema.canonical(),
         }
+        if self.text_dictionary is not None:
+            content["text"] = crc32(self.text_dictionary)
         text = json.dumps(content, sort_keys=True, separators=(",", ":"))
         return crc32(text.encode("utf-8"))
 
@@ -140,6 +161,11 @@ class TagDictionary:
             "tags": self.base_names(),
             "values": self.base_values(),
             "schema": None if self.schema is None else self.schema.to_dict(),
+            "text_dictionary": (
+                None
+                if self.text_dictionary is None
+                else base64.b64encode(self.text_dictionary).decode("ascii")
+            ),
         }
 
     @classmethod
@@ -183,7 +209,14 @@ class TagDictionary:
             )
         except (KeyError, TypeError) as error:
             raise ValueError(f"Malformed compiled schema: {error}")
-        dictionary = cls.from_names(tags, values, schema)
+        text = data.get("text_dictionary")
+        try:
+            text_dictionary = (
+                None if text is None else base64.b64decode(text, validate=True)
+            )
+        except (ValueError, TypeError) as error:
+            raise ValueError(f"Malformed text dictionary: {error}")
+        dictionary = cls.from_names(tags, values, schema, text_dictionary)
         recorded = data.get("fingerprint")
         if recorded is not None and recorded != dictionary.fingerprint:
             raise ValueError(
@@ -207,8 +240,70 @@ class TagDictionary:
     def fresh_copy(self) -> "TagDictionary":
         """A new dictionary holding only the pre-loaded entries."""
         return TagDictionary.from_names(
-            self.base_names(), self.base_values(), self.schema
+            self.base_names(), self.base_values(), self.schema, self.text_dictionary
         )
+
+    def set_stream(self, stream: "StreamState | None") -> None:
+        """Enter (or, with None, leave) stream mode for this dictionary."""
+        self.stream = stream
+        if self.values is not None:
+            self.values.stream = stream
+
+    # -- transactions (an encode or decode that fails leaves no trace) -----
+
+    def checkpoint(self) -> tuple[int, int]:
+        return (self.last_index, 0 if self.values is None else self.values.last_index)
+
+    def rollback(self, checkpoint: tuple[int, int]) -> None:
+        for dictionary, last in ((self, checkpoint[0]), (self.values, checkpoint[1])):
+            if dictionary is None:
+                continue
+            with dictionary.lock:
+                for index in [i for i in dictionary._lookup if i > last]:
+                    del dictionary._tags[dictionary._lookup.pop(index)]
+                dictionary.last_index = last
+
+    # -- inline definitions (stream mode) -----------------------------------
+
+    def encode_id(self, tag: str) -> BitArray:
+        """
+        The NybbleField id for ``tag``. In stream mode an unknown tag is
+        added and defined inline (id = next id, then its UTF-8 text), so the
+        receiver learns it without a NAK.
+        """
+        if self.has_tag(tag):
+            return NybbleField.to_binary(self.get(tag))
+        tag_id = self.add(tag)
+        bits = NybbleField.to_binary(tag_id)
+        if self.stream is not None:
+            data = tag.encode("utf-8")
+            channel = self.stream.text
+            if b"\0" not in data:
+                # The name itself travels in the (compressed) text channel.
+                channel.write_terminated(data)
+                bits += BitArray(bin="1")
+            else:
+                bits += (
+                    BitArray(bin="0")
+                    + NybbleField.to_binary(len(data))
+                    + BitArray(bytes=data)
+                )
+        return bits
+
+    def decode_id(self, reader: "BitReader") -> str:
+        """Read an id written by :meth:`encode_id` and return its text."""
+        tag_id = NybbleField.to_value(reader)
+        if (
+            self.stream is not None
+            and not self.has_tag_id(tag_id)
+            and tag_id == self.last_index + 1
+        ):
+            if reader.read_bool():
+                text = self.stream.text.read_terminated()
+            else:
+                text = reader.read_bytes(NybbleField.to_value(reader))
+            self.set(text.decode("utf-8"), tag_id)
+        return self.lookup_tag(tag_id)
 
     def add(self, tag: str) -> int:
         """

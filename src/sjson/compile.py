@@ -65,6 +65,7 @@ def compile_dictionary(
     samples: Iterable[Any] = (),
     intern_min_count: int | None = None,
     max_value_length: int = 64,
+    text_dictionary_size: int = 16384,
     **schema_options: Any,
 ) -> TagDictionary:
     """
@@ -80,6 +81,9 @@ def compile_dictionary(
         intern_min_count: If given, sample strings that occur at least this
             many times (and are at most ``max_value_length`` characters long)
             are added to the interned values.
+        text_dictionary_size: With samples, also train a zstd dictionary of
+            about this many bytes on the samples' longer strings, used by the
+            text channel (0 disables it).
         schema_options: Passed to the XSD loader.
     """
     from sjson.schema import load_schema
@@ -91,6 +95,7 @@ def compile_dictionary(
     names: Counter[str] = Counter()
     strings: Counter[str] = Counter()
     first: dict[str, int] = {}
+    samples = list(samples)
     for document in samples:
         _count(document, names, strings, first)
 
@@ -118,7 +123,43 @@ def compile_dictionary(
         strings,
         lambda v, i: ((0, value_rank[v]) if v in value_rank else (1, first["\0" + v])),
     )
-    return TagDictionary.from_names(tag_list, value_list, model)
+    text_dictionary = None
+    if text_dictionary_size and samples:
+        text_dictionary = _train_text_dictionary(samples, text_dictionary_size)
+    return TagDictionary.from_names(tag_list, value_list, model, text_dictionary)
+
+
+def _packet_text(document: Any) -> bytes:
+    """The strings of a document that would travel in the text channel."""
+    from sjson.string_node import StringNode
+
+    parts: list[bytes] = []
+    stack = [document]
+    while stack:
+        value = stack.pop()
+        if isinstance(value, dict):
+            stack.extend(reversed(list(value.values())))
+        elif isinstance(value, list):
+            stack.extend(reversed(value))
+        elif isinstance(value, str):
+            data = value.encode("utf-8")
+            if len(data) >= StringNode.TEXT_MIN_BYTES:
+                parts.append(data)
+    return b"".join(parts)
+
+
+def _train_text_dictionary(samples: list[Any], size: int) -> bytes | None:
+    import zstandard
+
+    texts = [t for t in map(_packet_text, samples) if t]
+    total = sum(map(len, texts))
+    if len(texts) < 8 or total < 1024:
+        return None
+    try:
+        trained = zstandard.train_dictionary(min(size, max(1024, total // 2)), texts)
+    except zstandard.ZstdError:
+        return None
+    return trained.as_bytes()
 
 
 def _read_samples(paths: Sequence[str], each: bool) -> list[Any]:
@@ -163,6 +204,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--max-value-length", type=int, default=64)
     parser.add_argument(
+        "--text-dictionary-size",
+        type=int,
+        default=16384,
+        help="size of the zstd text dictionary trained on samples (0: none)",
+    )
+    parser.add_argument(
         "--xsd-string-values",
         action="store_true",
         help="XSD only: every simple value is a JSON string (plain xmltodict)",
@@ -181,6 +228,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             samples=_read_samples(args.sample, args.each),
             intern_min_count=args.intern_min_count,
             max_value_length=args.max_value_length,
+            text_dictionary_size=args.text_dictionary_size,
             **options,
         )
     except (OSError, ValueError) as error:

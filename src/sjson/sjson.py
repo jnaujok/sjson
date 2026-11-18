@@ -19,13 +19,44 @@ from random import randint
 from typing import Any
 from zlib import crc32
 
+import zstandard
 from bitstring import BitArray
 
 from sjson.bit_reader import BitReader
 from sjson.node import Node
 from sjson.nybble_field import NybbleField
 from sjson.schema.codec import NonConformingError, SchemaCodec
+from sjson.stream_state import StreamState, TextChannel
 from sjson.tag_dictionary import TagDictionary
+
+
+def _text_channel(
+    dictionary: TagDictionary, stream: StreamState | None
+) -> TextChannel | None:
+    """Packets have a text channel in stream mode, or with a text dictionary."""
+    if stream is not None:
+        return stream.text
+    if dictionary.text_dictionary is not None:
+        return TextChannel()
+    return None
+
+
+def _zstd_dictionary(dictionary: TagDictionary) -> Any:
+    if dictionary.text_dictionary is None:
+        return None
+    cached = getattr(dictionary, "_zstd_dict", None)
+    if cached is None:
+        cached = zstandard.ZstdCompressionDict(dictionary.text_dictionary)
+        dictionary._zstd_dict = cached  # type: ignore[attr-defined]
+    return cached
+
+
+class StreamGapError(ValueError):
+    """
+    A stream-mode packet arrived out of sequence (one was lost, reordered or
+    the receiver restarted). The receiver's stream state is unchanged; ask the
+    sender to call :meth:`SJSON.reset_stream` and resend.
+    """
 
 
 class UnknownSchemaError(KeyError):
@@ -40,6 +71,8 @@ class PacketHeader:
     fingerprint: int | None
     data_length: int
     header_length: int
+    sequence: int | None = None
+    cache_width: int | None = None
 
     @property
     def message_length(self) -> int:
@@ -71,11 +104,16 @@ class SJSON:
     #   1 - version and flag bits introduced (0.3)
     #   2 - interned value dictionary (0.4) and schema-driven encoding (0.5)
     #   3 - objects end with tag id 0 instead of the 3-bit end marker (0.7)
-    VERSION: int = 3
+    #   4 - stream mode: flag bit 2, sequence number and cache width (0.8)
+    VERSION: int = 4
     VERSION_BITS: int = 4
     FLAG_BITS: int = 3
     FLAG_SCHEMA: int = 0b001
     FLAG_SCHEMA_ENCODED: int = 0b010
+    FLAG_STATEFUL: int = 0b100
+    TEXT_LEVEL: int = 19
+    SEQUENCE_BITS: int = 8
+    CACHE_WIDTH_BITS: int = 3
 
     def __init__(
         self,
@@ -83,6 +121,8 @@ class SJSON:
         sender_id: int | None = None,
         schema_encoding: bool = True,
         dictionary: Any = None,
+        stateful: bool = False,
+        cache_width: int = 3,
         **schema_options: Any,
     ) -> None:
         """
@@ -99,6 +139,14 @@ class SJSON:
                 ``TagDictionary.save`` (or ``python -m sjson.compile``), a
                 parsed dictionary document, or a ``TagDictionary``. It is also
                 registered for decoding.
+            stateful: Stream mode, for links that deliver packets in order
+                (TCP, WebSocket, a reliable bus). Each field remembers its
+                recent values, so repeats and small changes cost a few bits,
+                and new names travel inline instead of through a NAK. Packets
+                carry a sequence number; a receiver that misses one raises
+                ``StreamGapError`` until the sender calls ``reset_stream()``.
+            cache_width: Stream mode only: each field remembers
+                ``2**cache_width`` recent values.
             schema_options: Options for the XSD loader.
         """
         self.sender_dictionaries: dict[int, TagDictionary] = {}
@@ -106,6 +154,20 @@ class SJSON:
         self.known_dictionaries: dict[int, TagDictionary] = {}
         self.schema_encoding = schema_encoding
         self._codecs: dict[int, SchemaCodec] = {}
+        self.stateful = stateful
+        self.cache_width = cache_width
+        self._stream: StreamState | None = (
+            StreamState(cache_width) if stateful else None
+        )
+        self._sequence = 0
+        self._text: Any = None  # stream-mode text compressor, created lazily
+        # Receiving side: per sender, the text-channel decompressor and the
+        # last text decoded (so a packet that is retried after a NAK reuses
+        # it instead of advancing the decompressor twice).
+        self._text_in: dict[int, Any] = {}
+        self._text_retry: dict[int, tuple[tuple[int, bytes], bytes]] = {}
+        # Receiving side: per sender, its stream state and the next sequence.
+        self._streams: dict[int, tuple[StreamState, int]] = {}
         # TODO: Get the sender id from the config file
         self.sender_id = randint(0, 0xFFFF) if sender_id is None else sender_id
         if not 0 <= self.sender_id <= 0xFFFF:
@@ -143,6 +205,15 @@ class SJSON:
         self.known_dictionaries[dictionary.fingerprint] = dictionary
         return dictionary.fingerprint
 
+    def reset_stream(self) -> None:
+        """
+        Stream mode: forget all cached values. The next packet carries
+        sequence 0, which tells receivers to forget theirs too.
+        """
+        self._stream = StreamState(self.cache_width) if self.stateful else None
+        self._sequence = 0
+        self._text = None
+
     def get_sender_id(self) -> int:
         return self.sender_id
 
@@ -176,10 +247,21 @@ class SJSON:
         if version != cls.VERSION:
             raise ValueError(f"Unsupported packet version: {version}")
         flags = reader.read_uint(cls.FLAG_BITS)
+        sequence = cache_width = None
+        if flags & cls.FLAG_STATEFUL:
+            sequence = reader.read_uint(cls.SEQUENCE_BITS)
+            cache_width = reader.read_uint(cls.CACHE_WIDTH_BITS)
         fingerprint = reader.read_uint(32) if flags & cls.FLAG_SCHEMA else None
         data_length = NybbleField.to_value(reader)
         return PacketHeader(
-            sender_id, version, flags, fingerprint, data_length, reader.pos
+            sender_id,
+            version,
+            flags,
+            fingerprint,
+            data_length,
+            reader.pos,
+            sequence,
+            cache_width,
         )
 
     @classmethod
@@ -220,24 +302,67 @@ class SJSON:
             BitArray: The encoded bitstream
         """
         dictionary = self.get_dictionary(self.sender_id)
-        flags = 0
-        data_bits = None
-        if self.schema_encoding and dictionary.schema is not None:
-            try:
-                data_bits = self._codec(dictionary).encode(json_object)
-                flags |= self.FLAG_SCHEMA_ENCODED
-            except NonConformingError:
-                data_bits = None
-        if data_bits is None:
-            data_node = Node.from_value(json_object, dictionary)
-            data_bits = data_node.to_binary(tag_dictionary=dictionary)
+        stream = self._stream
+        flags = self.FLAG_STATEFUL if stream is not None else 0
+        dictionary.set_stream(stream)
+        channel = _text_channel(dictionary, stream)
+        dictionary.text = channel
+        checkpoint = dictionary.checkpoint()
+        try:
+            data_bits = None
+            if self.schema_encoding and dictionary.schema is not None:
+                if stream is not None:
+                    stream.begin()
+                try:
+                    data_bits = self._codec(dictionary).encode(json_object)
+                    flags |= self.FLAG_SCHEMA_ENCODED
+                except NonConformingError:
+                    # Undo whatever the attempt cached or defined.
+                    data_bits = None
+                    dictionary.rollback(checkpoint)
+                    if stream is not None:
+                        stream.rollback()
+                    if channel is not None:
+                        channel.reset_out()
+            if data_bits is None:
+                if stream is not None:
+                    stream.begin()
+                data_node = Node.from_value(json_object, dictionary)
+                data_bits = data_node.to_binary(tag_dictionary=dictionary)
+            if channel is not None:
+                blob = self._compress_text(dictionary, channel.pending(), stream)
+                data_bits = (
+                    NybbleField.to_binary(len(blob)) + BitArray(bytes=blob) + data_bits
+                )
+            if stream is not None:
+                stream.commit()
+        except Exception:
+            dictionary.rollback(checkpoint)
+            if stream is not None:
+                stream.rollback()
+            raise
+        finally:
+            dictionary.set_stream(None)
+            dictionary.text = None
         ret_val = BitArray(uint=self.sender_id, length=16) + BitArray(
             uint=self.VERSION, length=self.VERSION_BITS
         )
-        if dictionary.fingerprint is not None:
+        # In stream mode only the first packet (sequence 0) names the
+        # dictionary; later packets use whatever that packet established.
+        send_fingerprint = dictionary.fingerprint is not None and (
+            stream is None or self._sequence == 0
+        )
+        if send_fingerprint:
             flags |= self.FLAG_SCHEMA
         ret_val.append(BitArray(uint=flags, length=self.FLAG_BITS))
-        if dictionary.fingerprint is not None:
+        if stream is not None:
+            ret_val.append(BitArray(uint=self._sequence, length=self.SEQUENCE_BITS))
+            ret_val.append(
+                BitArray(uint=self.cache_width, length=self.CACHE_WIDTH_BITS)
+            )
+            self._sequence = self._sequence % 255 + 1  # 1..255; 0 means "reset"
+        if send_fingerprint:
+            assert dictionary.fingerprint is not None
             ret_val.append(BitArray(uint=dictionary.fingerprint, length=32))
         ret_val.append(NybbleField.to_binary(len(data_bits)))
         ret_val.append(data_bits)
@@ -272,12 +397,94 @@ class SJSON:
 
         reader = BitReader(bits[header.header_length : message_length])
         dictionary = self._dictionary_for(header)
-        if header.flags & self.FLAG_SCHEMA_ENCODED:
-            if dictionary.schema is None:
-                raise ValueError("Schema-encoded packet without a schema")
-            return self._codec(dictionary).decode(reader)
-        data_node = Node.from_bits(reader, dictionary)
-        return data_node.get_value()
+        stream = self._stream_for(header)
+        dictionary.set_stream(stream)
+        channel = _text_channel(dictionary, stream)
+        dictionary.text = channel
+        checkpoint = dictionary.checkpoint()
+        if stream is not None:
+            stream.begin()
+        try:
+            if channel is not None:
+                channel.load(self._read_text(header, reader, dictionary))
+            if header.flags & self.FLAG_SCHEMA_ENCODED:
+                if dictionary.schema is None:
+                    raise ValueError("Schema-encoded packet without a schema")
+                value = self._codec(dictionary).decode(reader)
+            else:
+                value = Node.from_bits(reader, dictionary).get_value()
+        except Exception:
+            # Leave no trace, so the same packet can be decoded again (for
+            # example after a NAK brought the missing names).
+            dictionary.rollback(checkpoint)
+            if stream is not None:
+                stream.rollback()
+            raise
+        finally:
+            dictionary.set_stream(None)
+            dictionary.text = None
+        if stream is not None:
+            assert header.sequence is not None
+            stream.commit()
+            self._streams[header.sender_id] = (stream, header.sequence % 255 + 1)
+        return value
+
+    def _compress_text(
+        self,
+        dictionary: TagDictionary,
+        text: bytes,
+        stream: StreamState | None,
+    ) -> bytes:
+        if not text:
+            return b""
+        zdict = _zstd_dictionary(dictionary)
+        if stream is None:  # one self-contained frame per packet
+            return zstandard.ZstdCompressor(
+                level=self.TEXT_LEVEL, dict_data=zdict, write_checksum=False
+            ).compress(text)
+        if self._text is None:
+            self._text = zstandard.ZstdCompressor(
+                level=self.TEXT_LEVEL, dict_data=zdict
+            ).compressobj()
+        return self._text.compress(text) + self._text.flush(
+            zstandard.COMPRESSOBJ_FLUSH_BLOCK
+        )
+
+    def _read_text(
+        self, header: PacketHeader, reader: BitReader, dictionary: TagDictionary
+    ) -> bytes:
+        """Decompress a packet's text channel (once per stream packet)."""
+        blob = reader.read_bytes(NybbleField.to_value(reader))
+        zdict = _zstd_dictionary(dictionary)
+        if header.sequence is None:
+            if not blob:
+                return b""
+            return zstandard.ZstdDecompressor(dict_data=zdict).decompress(blob)
+        retry = self._text_retry.get(header.sender_id)
+        if retry is not None and retry[0] == (header.sequence, blob):
+            return retry[1]
+        if header.sequence == 0 or header.sender_id not in self._text_in:
+            self._text_in[header.sender_id] = zstandard.ZstdDecompressor(
+                dict_data=zdict
+            ).decompressobj()
+        text = self._text_in[header.sender_id].decompress(blob) if blob else b""
+        self._text_retry[header.sender_id] = ((header.sequence, blob), text)
+        return text
+
+    def _stream_for(self, header: PacketHeader) -> StreamState | None:
+        if not header.flags & self.FLAG_STATEFUL:
+            return None
+        assert header.sequence is not None and header.cache_width is not None
+        if header.sequence == 0:
+            return StreamState(header.cache_width)
+        current = self._streams.get(header.sender_id)
+        if current is None or current[1] != header.sequence:
+            expected = None if current is None else current[1]
+            raise StreamGapError(
+                f"Sender {header.sender_id}: expected stream packet {expected}, "
+                f"got {header.sequence}"
+            )
+        return current[0]
 
     def _codec(self, dictionary: TagDictionary) -> SchemaCodec:
         codec = self._codecs.get(id(dictionary))
