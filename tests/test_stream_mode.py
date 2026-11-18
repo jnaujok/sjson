@@ -337,3 +337,33 @@ class TestOptionalSenderId:
         # Stateless packets of our own still decode (loopback).
         plain = SJSON(sender_id=1)
         assert plain.to_value(plain.to_binary({"b": 2})) == {"b": 2}
+
+
+class TestFrameCache:
+    def test_stateless_frames_reuse_one_compressor(self) -> None:
+        from sjson.sjson import _frame_compressor, _frame_decompressor
+
+        dictionary = compile_dictionary(
+            samples=documents(30), text_dictionary_size=16384
+        )
+        sender = SJSON(sender_id=7, dictionary=dictionary)
+        receiver = SJSON(sender_id=8)
+        receiver.register_dictionary(dictionary.to_dict())
+        own = sender.get_dictionary(7)
+        for doc in documents(10, seed=11):
+            packet = sender.to_binary(doc)
+            try:
+                value = receiver.to_value(packet)
+            except KeyError:
+                receiver.load_dictionary(
+                    sender.nak_dictionary(
+                        7, receiver.last_known_tag(7), receiver.last_known_value(7)
+                    )
+                )
+                value = receiver.to_value(packet)
+            assert value == doc
+        compressor = _frame_compressor(own, SJSON.TEXT_LEVEL)
+        assert _frame_compressor(own, SJSON.TEXT_LEVEL) is compressor
+        assert _frame_compressor(own, 3) is not compressor  # another level
+        theirs = receiver.get_dictionary(7)
+        assert _frame_decompressor(theirs) is _frame_decompressor(theirs)

@@ -63,6 +63,37 @@ def _zstd_dictionary(dictionary: TagDictionary) -> Any:
     return cached
 
 
+def _frame_compressor(dictionary: TagDictionary, level: int) -> Any:
+    """
+    A compressor for one-shot (stateless) text frames, kept with the
+    dictionary: building one digests the text dictionary into level-sized
+    tables, which would otherwise happen again for every packet.
+    """
+    cached = getattr(dictionary, "_zstd_frame_out", None)
+    if cached is None or cached[0] != level:
+        # A copy of its own: a precomputed dictionary brings its own
+        # parameters, which must not reach the stream compressor.
+        zdict = None
+        if dictionary.text_dictionary is not None:
+            zdict = zstandard.ZstdCompressionDict(dictionary.text_dictionary)
+            zdict.precompute_compress(level=level)
+        compressor = zstandard.ZstdCompressor(
+            level=level, dict_data=zdict, write_checksum=False
+        )
+        cached = (level, compressor)
+        dictionary._zstd_frame_out = cached  # type: ignore[attr-defined]
+    return cached[1]
+
+
+def _frame_decompressor(dictionary: TagDictionary) -> Any:
+    """A decompressor for one-shot text frames, kept with the dictionary."""
+    cached = getattr(dictionary, "_zstd_frame_in", None)
+    if cached is None:
+        cached = zstandard.ZstdDecompressor(dict_data=_zstd_dictionary(dictionary))
+        dictionary._zstd_frame_in = cached  # type: ignore[attr-defined]
+    return cached
+
+
 class StreamGapError(ValueError):
     """
     A stream-mode packet arrived out of sequence (one was lost, reordered or
@@ -501,13 +532,11 @@ class SJSON:
     ) -> bytes:
         if not text:
             return b""
-        zdict = _zstd_dictionary(dictionary)
         if stream is None:  # one self-contained frame per packet
             # zstd sizes a one-shot frame's window and tables to the text,
             # so no window limit is needed here.
-            return zstandard.ZstdCompressor(
-                level=self.TEXT_LEVEL, dict_data=zdict, write_checksum=False
-            ).compress(text)
+            return _frame_compressor(dictionary, self.TEXT_LEVEL).compress(text)
+        zdict = _zstd_dictionary(dictionary)
         if self._text is None:
             self._text = zstandard.ZstdCompressor(
                 compression_params=_text_parameters(
@@ -528,7 +557,7 @@ class SJSON:
         if header.sequence is None:
             if not blob:
                 return b""
-            return zstandard.ZstdDecompressor(dict_data=zdict).decompress(blob)
+            return _frame_decompressor(dictionary).decompress(blob)
         retry = self._text_retry.get(header.sender_id)
         if retry is not None and retry[0] == (header.sequence, blob):
             return retry[1]
