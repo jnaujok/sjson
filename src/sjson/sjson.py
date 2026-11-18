@@ -24,6 +24,7 @@ from bitstring import BitArray
 from sjson.bit_reader import BitReader
 from sjson.node import Node
 from sjson.nybble_field import NybbleField
+from sjson.schema.codec import NonConformingError, SchemaCodec
 from sjson.tag_dictionary import TagDictionary
 
 
@@ -68,11 +69,13 @@ class SJSON:
     VERSION_BITS: int = 4
     FLAG_BITS: int = 3
     FLAG_SCHEMA: int = 0b001
+    FLAG_SCHEMA_ENCODED: int = 0b010
 
     def __init__(
         self,
         schema: Any = None,
         sender_id: int | None = None,
+        schema_encoding: bool = True,
         **schema_options: Any,
     ) -> None:
         """
@@ -81,10 +84,15 @@ class SJSON:
                 a parsed JSON Schema ``dict`` or a ``SchemaModel``. It is also
                 registered for decoding.
             sender_id: This sender's 16-bit id (random if not given).
+            schema_encoding: With a schema, encode documents that match it
+                using the schema-driven encoding (no field tags or type codes).
+                Documents that do not match fall back to the tagged encoding.
             schema_options: Options for the XSD loader.
         """
         self.sender_dictionaries: dict[int, TagDictionary] = {}
         self.schemas: dict[int, Any] = {}
+        self.schema_encoding = schema_encoding
+        self._codecs: dict[int, SchemaCodec] = {}
         # TODO: Get the sender id from the config file
         self.sender_id = randint(0, 0xFFFF) if sender_id is None else sender_id
         if not 0 <= self.sender_id <= 0xFFFF:
@@ -150,7 +158,8 @@ class SJSON:
         |:------|:------------|
         | 16 bits | sender id |
         | 4 bits | packet version |
-        | 3 bits | flags (bit 0: a schema fingerprint follows) |
+        | 3 bits | flags (bit 0: a schema fingerprint follows, bit 1: the data |
+        |        | uses the schema-driven encoding) |
         | 32 bits | schema fingerprint, only if flagged |
         | NybbleField | data length in bits |
         | ... | data |
@@ -163,9 +172,17 @@ class SJSON:
             BitArray: The encoded bitstream
         """
         dictionary = self.get_dictionary(self.sender_id)
-        data_node = Node.from_value(json_object, dictionary)
-        data_bits = data_node.to_binary(tag_dictionary=dictionary)
         flags = 0
+        data_bits = None
+        if self.schema_encoding and dictionary.schema is not None:
+            try:
+                data_bits = self._codec(dictionary).encode(json_object)
+                flags |= self.FLAG_SCHEMA_ENCODED
+            except NonConformingError:
+                data_bits = None
+        if data_bits is None:
+            data_node = Node.from_value(json_object, dictionary)
+            data_bits = data_node.to_binary(tag_dictionary=dictionary)
         ret_val = BitArray(uint=self.sender_id, length=16) + BitArray(
             uint=self.VERSION, length=self.VERSION_BITS
         )
@@ -207,8 +224,20 @@ class SJSON:
 
         reader = BitReader(bits[header.header_length : message_length])
         dictionary = self._dictionary_for(header)
+        if header.flags & self.FLAG_SCHEMA_ENCODED:
+            if dictionary.schema is None:
+                raise ValueError("Schema-encoded packet without a schema")
+            return self._codec(dictionary).decode(reader)
         data_node = Node.from_bits(reader, dictionary)
         return data_node.get_value()
+
+    def _codec(self, dictionary: TagDictionary) -> SchemaCodec:
+        codec = self._codecs.get(id(dictionary))
+        if codec is None or codec.dictionary is not dictionary:
+            assert dictionary.schema is not None
+            codec = SchemaCodec(dictionary.schema, dictionary)
+            self._codecs[id(dictionary)] = codec
+        return codec
 
     def _dictionary_for(self, header: PacketHeader) -> TagDictionary:
         existing = self.sender_dictionaries.get(header.sender_id)
