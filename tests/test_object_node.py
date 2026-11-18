@@ -28,7 +28,7 @@ class TestObjectNode:
         node: ObjectNode = ObjectNode({})
         ba: BitArray = node.to_binary(tag_dictionary=tag_dictionary)
         assert isinstance(ba, BitArray)
-        assert ba.bin == Node.NODE_OBJECT + Node.END_OF_OBJECT
+        assert ba.bin == Node.NODE_OBJECT + ObjectNode.END_OF_MEMBERS
 
     def test_single_property(self) -> None:
         tag_dictionary: TagDictionary = TagDictionary()

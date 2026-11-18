@@ -70,7 +70,8 @@ class SJSON:
     # misreading it:
     #   1 - version and flag bits introduced (0.3)
     #   2 - interned value dictionary (0.4) and schema-driven encoding (0.5)
-    VERSION: int = 2
+    #   3 - objects end with tag id 0 instead of the 3-bit end marker (0.7)
+    VERSION: int = 3
     VERSION_BITS: int = 4
     FLAG_BITS: int = 3
     FLAG_SCHEMA: int = 0b001

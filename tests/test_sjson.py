@@ -21,6 +21,7 @@ import pytest
 
 from bitstring import BitArray
 from sjson.node import Node
+from sjson.object_node import ObjectNode
 from sjson.sjson import SJSON
 
 
@@ -50,7 +51,7 @@ class TestSJson:
         node_start = SJSON.read_header(ba).header_length
         assert isinstance(ba, BitArray)
         assert ba[node_start : node_start + 3].bin == Node.NODE_OBJECT  # noqa E501
-        assert ba[-35:-32].bin == Node.END_OF_OBJECT
+        assert ba[-37:-32].bin == ObjectNode.END_OF_MEMBERS
         bs_len = len(ba.tobytes())
         assert json_length > bs_len
 
