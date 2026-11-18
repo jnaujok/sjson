@@ -1,6 +1,6 @@
 [project]
 name = "sjson"
-version = "0.5.0"
+version = "0.6.0"
 description = "A streaming JSON library for highly compressed JSON transmission."
 authors = [
     {name = "Jeffrey Naujok",email = "jnaujok@harvestwave.com"}
@@ -12,6 +12,9 @@ dependencies = [
     "bitstring (>=4.3.0,<5.0.0)",
     "lz4 (>=4.4.0,<5.0.0)"
 ]
+
+[project.scripts]
+sjson-compile = "sjson.compile:main"
 
 [tool.poetry]
 packages = [{include = "sjson", from = "src"}]

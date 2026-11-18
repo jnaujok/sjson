@@ -112,3 +112,28 @@ class TestValueNak:
         assert receiver.to_value(sender.to_binary(document)) == document
         sid = sender.get_sender_id()
         assert receiver.last_known_value(sid) == 7
+
+
+class TestInternedBeforeSpecialForms:
+    def test_enumerated_uuid_uses_its_value_id(self) -> None:
+        enum_uuid = "12345678-1234-a2f7-1234-123456789012"
+        dictionary = TagDictionary.from_schema(
+            {"properties": {"id": {"enum": [enum_uuid]}}}
+        )
+        bits = StringNode(enum_uuid).to_binary(dictionary)
+        assert bits[4:8].bin == StringNode.SPECIAL_HANDLING_INTERNED.bin
+        assert len(bits) == 13
+        assert Node.from_bits(bits, dictionary).get_value() == enum_uuid
+
+
+class TestPacketVersion:
+    def test_older_versions_are_rejected(self) -> None:
+        packet = SJSON().to_binary({"a": "https://example.com/"})
+        assert SJSON.read_header(packet).version == SJSON.VERSION == 2
+        packet.overwrite("0b0001", 16)
+        try:
+            SJSON().to_value(packet)
+        except ValueError as error:
+            assert "version" in str(error)
+        else:  # pragma: no cover
+            raise AssertionError("a version-1 packet was accepted")

@@ -195,6 +195,50 @@ class SchemaModel:
             for node in order
         ]
 
+    def to_dict(self) -> dict[str, Any]:
+        """
+        A JSON-serialisable form of the whole model, from which
+        :meth:`from_dict` rebuilds an identical model (same field order, same
+        fingerprint).
+        """
+        numbers = {id(node): index for index, node in enumerate(self.walk())}
+        return {
+            "types": self.canonical(),
+            "extras": [numbers[id(node)] for node in self.extra_types],
+            "source": self.source,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SchemaModel":
+        """Rebuild a model saved with :meth:`to_dict`."""
+        entries = data["types"]
+        if not entries:
+            raise ValueError("A compiled schema needs at least one type")
+        nodes = [SchemaType() for _ in entries]
+
+        def node(index: Any) -> SchemaType:
+            if not isinstance(index, int) or not 0 <= index < len(nodes):
+                raise ValueError(f"Invalid type reference: {index!r}")
+            return nodes[index]
+
+        for target, entry in zip(nodes, entries):
+            target.kinds = set(entry["kinds"]) & ALL_KINDS
+            for name, ref, required in entry["properties"]:
+                target.properties[name] = Property(name, node(ref), bool(required))
+            target.additional_properties = bool(entry["additional"])
+            target.items = None if entry["items"] is None else node(entry["items"])
+            target.prefix_items = [node(i) for i in entry["prefix_items"]]
+            target.enum = entry["enum"]
+            target.minimum = entry["minimum"]
+            target.maximum = entry["maximum"]
+            target.format = entry["format"]
+            target.variants = [node(i) for i in entry["variants"]]
+        return cls(
+            root=nodes[0],
+            extra_types=[node(i) for i in data.get("extras", [])],
+            source=str(data.get("source", "")),
+        )
+
     @property
     def fingerprint(self) -> int:
         """A 32-bit CRC of :meth:`canonical`, sent in packet headers."""

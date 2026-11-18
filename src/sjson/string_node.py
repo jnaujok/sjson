@@ -158,14 +158,14 @@ class StringNode(Node):
         """Encode a string without its type code."""
         if len(value) == 0:
             return cls.NEEDS_SPECIAL_HANDLING + cls.SPECIAL_HANDLING_EMPTY_STRING
-        if _UUID_RE.fullmatch(value) and not (
-            any(c.isupper() for c in value) and any(c.islower() for c in value)
-        ):
-            return cls._uuid_to_binary(value)
         values = None if tag_dictionary is None else tag_dictionary.values
         if values is not None and values.has_tag(value):
             # Enumerated values and URLs seen before: a few bits.
             return cls._interned_to_binary(values.get(value))
+        if _UUID_RE.fullmatch(value) and not (
+            any(c.isupper() for c in value) and any(c.islower() for c in value)
+        ):
+            return cls._uuid_to_binary(value)
         if cls._is_url(value):
             if values is None:
                 raise KeyError("Cannot encode a URL without a tag dictionary.")

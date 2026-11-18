@@ -65,7 +65,12 @@ class SJSON:
     every value type) is documented in the project README.
     """
 
-    VERSION: int = 1
+    # Packet format version. Bumped whenever a packet's meaning changes, so
+    # that peers with an older implementation reject it instead of
+    # misreading it:
+    #   1 - version and flag bits introduced (0.3)
+    #   2 - interned value dictionary (0.4) and schema-driven encoding (0.5)
+    VERSION: int = 2
     VERSION_BITS: int = 4
     FLAG_BITS: int = 3
     FLAG_SCHEMA: int = 0b001
@@ -76,6 +81,7 @@ class SJSON:
         schema: Any = None,
         sender_id: int | None = None,
         schema_encoding: bool = True,
+        dictionary: Any = None,
         **schema_options: Any,
     ) -> None:
         """
@@ -87,20 +93,54 @@ class SJSON:
             schema_encoding: With a schema, encode documents that match it
                 using the schema-driven encoding (no field tags or type codes).
                 Documents that do not match fall back to the tagged encoding.
+            dictionary: Optional pre-compiled dictionary for this sender, used
+                instead of ``schema``: a path to a file written by
+                ``TagDictionary.save`` (or ``python -m sjson.compile``), a
+                parsed dictionary document, or a ``TagDictionary``. It is also
+                registered for decoding.
             schema_options: Options for the XSD loader.
         """
         self.sender_dictionaries: dict[int, TagDictionary] = {}
-        self.schemas: dict[int, Any] = {}
+        # Pre-loaded dictionaries this instance can decode, by fingerprint.
+        self.known_dictionaries: dict[int, TagDictionary] = {}
         self.schema_encoding = schema_encoding
         self._codecs: dict[int, SchemaCodec] = {}
         # TODO: Get the sender id from the config file
         self.sender_id = randint(0, 0xFFFF) if sender_id is None else sender_id
         if not 0 <= self.sender_id <= 0xFFFF:
             raise ValueError("sender_id must fit in 16 bits")
+        if schema is not None and dictionary is not None:
+            raise ValueError("Pass either a schema or a dictionary, not both")
+        own = None
         if schema is not None:
-            dictionary = TagDictionary.from_schema(schema, **schema_options)
-            self.sender_dictionaries[self.sender_id] = dictionary
-            self.schemas[dictionary.fingerprint] = dictionary.schema  # type: ignore
+            own = TagDictionary.from_schema(schema, **schema_options)
+        elif dictionary is not None:
+            own = self._as_dictionary(dictionary)
+        if own is not None:
+            self._register(own)
+            self.sender_dictionaries[self.sender_id] = own.fresh_copy()
+
+    @property
+    def schemas(self) -> dict[int, Any]:
+        """Registered schemas by fingerprint (dictionaries without one omitted)."""
+        return {
+            fingerprint: dictionary.schema
+            for fingerprint, dictionary in self.known_dictionaries.items()
+            if dictionary.schema is not None
+        }
+
+    @staticmethod
+    def _as_dictionary(dictionary: Any) -> TagDictionary:
+        if isinstance(dictionary, TagDictionary):
+            return dictionary.fresh_copy()
+        if isinstance(dictionary, (dict, list)):
+            return TagDictionary.from_dict(dictionary)
+        return TagDictionary.load(dictionary)
+
+    def _register(self, dictionary: TagDictionary) -> int:
+        assert dictionary.fingerprint is not None
+        self.known_dictionaries[dictionary.fingerprint] = dictionary
+        return dictionary.fingerprint
 
     def get_sender_id(self) -> int:
         return self.sender_id
@@ -113,11 +153,18 @@ class SJSON:
         Returns:
             int: The schema's fingerprint.
         """
-        from sjson.schema import load_schema
+        return self._register(TagDictionary.from_schema(schema, **schema_options))
 
-        model = load_schema(schema, **schema_options)
-        self.schemas[model.fingerprint] = model
-        return model.fingerprint
+    def register_dictionary(self, dictionary: Any) -> int:
+        """
+        Register a pre-compiled dictionary that senders may use (a file path,
+        a parsed dictionary document, or a ``TagDictionary``). Packets that
+        carry its fingerprint will be decoded with a copy of it.
+
+        Returns:
+            int: The dictionary's fingerprint.
+        """
+        return self._register(self._as_dictionary(dictionary))
 
     @classmethod
     def read_header(cls, bits: BitArray) -> PacketHeader:
@@ -245,13 +292,13 @@ class SJSON:
             return self.get_dictionary(header.sender_id)
         if existing is not None and existing.fingerprint == header.fingerprint:
             return existing
-        if header.fingerprint not in self.schemas:
+        if header.fingerprint not in self.known_dictionaries:
             raise UnknownSchemaError(
-                f"Sender {header.sender_id} uses schema {header.fingerprint:#010x}, "
-                "which has not been registered"
+                f"Sender {header.sender_id} uses schema or dictionary "
+                f"{header.fingerprint:#010x}, which has not been registered"
             )
-        # A new sender, or one that switched schema: start from the schema.
-        dictionary = TagDictionary.from_schema(self.schemas[header.fingerprint])
+        # A new sender, or one that switched dictionary: start from a copy.
+        dictionary = self.known_dictionaries[header.fingerprint].fresh_copy()
         self.sender_dictionaries[header.sender_id] = dictionary
         return dictionary
 
