@@ -43,9 +43,10 @@ No sample-trained dictionaries:
 | JSON + brotli-11, per message | 730 (3.1x) | 731 (3.1x) |
 | SJSON + UCI schema, per message | 370 (6.2x) | 370 (6.2x) |
 | JSON + zstd-19, shared stream context | 106 (21.7x) | 145 (15.8x) |
-| SJSON stream mode, no setup | 102 (22.5x) | 130 (17.6x) |
-| **SJSON stream mode + UCI schema** | **90 (25.4x)** | **118 (19.4x)** |
+| SJSON stream mode, no setup | 100 (22.9x) | 129 (17.9x) |
+| **SJSON stream mode + UCI schema** | **88.5 (25.9x)** | **116 (19.7x)** |
 
 EXI with a schema keeps values but not their exact text (timestamps lose
 trailing zeros, numbers are rewritten); with lexical values preserved it
-takes 537 bytes. SJSON always returns the exact text.
+takes 537 bytes. SJSON always returns the exact text. The full table is in the
+project README.

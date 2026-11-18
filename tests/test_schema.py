@@ -255,3 +255,18 @@ class TestSchemaDictionary:
         c = load_schema({"properties": {"x": {"type": "integer"}}})
         assert a.fingerprint != b.fingerprint
         assert a.fingerprint == c.fingerprint
+
+
+def test_defs_names_with_pointer_characters() -> None:
+    """$defs names holding "/", "~" or "%" are escaped in their pointers."""
+    schema = {
+        "type": "object",
+        "properties": {"a": {"type": "integer"}},
+        "$defs": {
+            "a/b": {"type": "object", "properties": {"slash": {"type": "string"}}},
+            "c~d": {"type": "object", "properties": {"tilde": {"type": "string"}}},
+            "e%41": {"type": "object", "properties": {"percent": {"type": "string"}}},
+        },
+    }
+    names = set(TagDictionary.from_schema(schema).base_names())
+    assert {"a", "slash", "tilde", "percent"} <= names

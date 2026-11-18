@@ -33,12 +33,12 @@ def python_run(test, kwargs, setup):
         packets += len(packet.tobytes())
         t = time.perf_counter()
         try:
-            value = receiver.to_value(packet)
+            value = receiver.to_value(packet, sender_id=sid)
         except KeyError:
             update = sender.nak_dictionary(sid, receiver.last_known_tag(sid), receiver.last_known_value(sid))
             nak += len(update.tobytes())
             receiver.load_dictionary(update)
-            value = receiver.to_value(packet)
+            value = receiver.to_value(packet, sender_id=sid)
         decode_s += time.perf_counter() - t
         assert value == message
     return {"bytes": packets + nak, "nak": nak, "encode_s": encode_s, "decode_s": decode_s}
@@ -64,7 +64,7 @@ for smooth in (True, False):
     train = [m for t, p, m in msgs if t < 45]
     test = [(p, m) for t, p, m in msgs if t >= 45]
     samples = compile_dictionary(samples=train, intern_min_count=3)
-    samples.save(OUT / f"{label}_samples.dict.json")
+    samples.save(OUT / f"{label}_samples.sdj")
     reg = lambda r: r.register_schema(model)
     configs = {
         "learnt": ({}, None),
@@ -74,7 +74,7 @@ for smooth in (True, False):
         "samples dict": ({"dictionary": samples}, lambda r: r.register_dictionary(samples)),
         "samples dict, stream": ({"dictionary": samples, "stateful": True}, lambda r: r.register_dictionary(samples)),
     }
-    export(label, test, configs, {"samples_dictionary": f"{label}_samples.dict.json"})
+    export(label, test, configs, {"samples_dictionary": f"{label}_samples.sdj"})
 
 C = bench.CORPUS
 rows = [json.loads(l) for l in (C / "amazon_cellphones.ndjson").read_text().splitlines() if l.strip()]

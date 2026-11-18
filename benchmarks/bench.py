@@ -68,13 +68,13 @@ def sjson_run(test, train=(), sender_kwargs=None, receiver_setup=None):
         total += len(packet.tobytes())
         schema_encoded += bool(SJSON.read_header(packet).flags & SJSON.FLAG_SCHEMA_ENCODED)
         try:
-            decoded = receiver.to_value(packet)
+            decoded = receiver.to_value(packet, sender_id=1)
         except KeyError:
             update = sender.nak_dictionary(1, receiver.last_known_tag(1),
                                            receiver.last_known_value(1))
             nak_bytes += len(update.tobytes())
             receiver.load_dictionary(update)
-            decoded = receiver.to_value(packet)
+            decoded = receiver.to_value(packet, sender_id=1)
         assert decoded == message, "round trip failed"
     return {
         "bytes": total,

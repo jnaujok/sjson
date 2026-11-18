@@ -72,7 +72,12 @@ class JsonSchemaLoader:
         if isinstance(document, dict):
             for key in ("$defs", "definitions"):
                 for name in document.get(key, {}) or {}:
-                    extras.append(self._resolve(self._root_key, f"/{key}/{name}"))
+                    # JSON Pointer escapes (RFC 6901), plus "%" since
+                    # pointers are percent-decoded as URI fragments.
+                    escaped = (
+                        name.replace("%", "%25").replace("~", "~0").replace("/", "~1")
+                    )
+                    extras.append(self._resolve(self._root_key, f"/{key}/{escaped}"))
         return SchemaModel(root=root, extra_types=extras, source=self._root_key)
 
     # -- references -------------------------------------------------------

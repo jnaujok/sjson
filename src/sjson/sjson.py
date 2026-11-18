@@ -488,11 +488,10 @@ class SJSON:
             return b""
         zdict = _zstd_dictionary(dictionary)
         if stream is None:  # one self-contained frame per packet
+            # zstd sizes a one-shot frame's window and tables to the text,
+            # so no window limit is needed here.
             return zstandard.ZstdCompressor(
-                compression_params=_text_parameters(
-                    self.TEXT_LEVEL, self.TEXT_WINDOW_LOG
-                ),
-                dict_data=zdict,
+                level=self.TEXT_LEVEL, dict_data=zdict, write_checksum=False
             ).compress(text)
         if self._text is None:
             self._text = zstandard.ZstdCompressor(

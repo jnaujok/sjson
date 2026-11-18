@@ -190,13 +190,13 @@ def sjson_stream(test, sender_kwargs=None, setup=None):
         packets += len(packet.tobytes())
         encoded += bool(SJSON.read_header(packet).flags & SJSON.FLAG_SCHEMA_ENCODED)
         try:
-            value = receiver.to_value(packet)
+            value = receiver.to_value(packet, sender_id=sid)
         except KeyError:
             update = sender.nak_dictionary(sid, receiver.last_known_tag(sid),
                                            receiver.last_known_value(sid))
             nak += len(update.tobytes())
             receiver.load_dictionary(update)
-            value = receiver.to_value(packet)
+            value = receiver.to_value(packet, sender_id=sid)
         assert value == message
     return {"packets": packets, "nak": nak, "total": packets + nak,
             "schema_encoded": encoded / len(test),
