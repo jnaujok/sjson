@@ -58,8 +58,7 @@ class TestSchemaPreloadedSJSON:
         packet = sender.to_binary(document)
         assert receiver.to_value(packet) == document
         assert (
-            SJSON.read_header(packet).fingerprint
-            == sender.get_dictionary(sender.get_sender_id()).fingerprint
+            SJSON.read_header(packet).fingerprint == sender.own_dictionary.fingerprint
         )
 
     def test_unknown_fields_still_use_nak(self) -> None:
@@ -73,14 +72,14 @@ class TestSchemaPreloadedSJSON:
         with pytest.raises(KeyError):
             receiver.to_value(packet)
         known = receiver.last_known_tag(sender.get_sender_id())
-        base = sender.get_dictionary(sender.get_sender_id()).base_size
+        base = sender.own_dictionary.base_size
         assert known == base
         known_value = receiver.last_known_value(sender.get_sender_id())
         update = sender.nak_dictionary(sender.get_sender_id(), known, known_value)
         receiver.load_dictionary(update)
         assert receiver.to_value(packet) == document
         # Only the names and values outside the schema were sent.
-        dictionary = sender.get_dictionary(sender.get_sender_id())
+        dictionary = sender.own_dictionary
         assert [name for _, name in dictionary.get_tags(known)] == [
             "extraField",
             "link",

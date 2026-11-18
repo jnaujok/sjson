@@ -44,6 +44,22 @@ class TestSJson:
             "a_null": None,
         }
         self.sjson = SJSON()
+        self.receiver = SJSON()
+
+    def receive(self, ba: BitArray) -> object:
+        """Decode on a separate receiver, fetching names with a NAK."""
+        sid = self.sjson.get_sender_id()
+        try:
+            return self.receiver.to_value(ba)
+        except KeyError:
+            self.receiver.load_dictionary(
+                self.sjson.nak_dictionary(
+                    sid,
+                    self.receiver.last_known_tag(sid),
+                    self.receiver.last_known_value(sid),
+                )
+            )
+            return self.receiver.to_value(ba)
 
     def test_from_json(self) -> None:
         json_length = len(json.dumps(self.json).encode("utf-8"))
@@ -58,7 +74,7 @@ class TestSJson:
     def test_to_value(self) -> None:
         ba = self.sjson.to_binary(self.json)
         ba_len = len(ba.tobytes())
-        val = self.sjson.to_value(ba)
+        val = self.receive(ba)
         assert isinstance(val, dict)
 
         val_length = len(json.dumps(val).encode("utf-8"))
@@ -70,7 +86,7 @@ class TestSJson:
     def test_to_value_does_not_modify_input(self) -> None:
         ba = self.sjson.to_binary(self.json)
         copy = ba.copy()
-        self.sjson.to_value(ba)
+        self.receive(ba)
         assert ba == copy
 
     def test_byte_padded_packet(self) -> None:
@@ -78,7 +94,7 @@ class TestSJson:
         for document in ({"a": True}, self.json, [1, "two", None]):
             ba = self.sjson.to_binary(document)
             padded = BitArray(bytes=ba.tobytes())
-            assert self.sjson.to_value(padded) == document
+            assert self.receive(padded) == document
 
     def test_crc_mismatch(self) -> None:
         ba = self.sjson.to_binary(self.json)
