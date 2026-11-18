@@ -116,7 +116,7 @@ class TestStreamMode:
             plain_bytes += len(plain.to_binary(doc).tobytes())
         assert stream_bytes < plain_bytes / 2
         # New names were defined inline: no NAK was ever needed.
-        assert receiver.last_known_tag(7) == sender.get_dictionary(7).last_index
+        assert receiver.last_known_tag(0) == sender.get_dictionary(7).last_index
 
     def test_float_values_are_exact(self) -> None:
         sender, receiver = pair()
@@ -173,7 +173,7 @@ class TestStreamMode:
                 value = receiver.to_value(packet)
             except KeyError:
                 receiver.load_dictionary(
-                    sender.nak_dictionary(7, receiver.last_known_tag(7), 0)
+                    sender.nak_dictionary(0, receiver.last_known_tag(0), 0)
                 )
                 value = receiver.to_value(packet)
             assert value == dict(doc, extra=doc["seq"])
@@ -256,3 +256,50 @@ class TestReviewFindings:
         sender, receiver = pair()
         for value in ["prefix-old-value", "prefix-https://example.com/path"]:
             assert receiver.to_value(sender.to_binary({"v": value})) == {"v": value}
+
+
+class TestOptionalSenderId:
+    def test_stream_mode_omits_sender_id(self) -> None:
+        sender = SJSON(sender_id=7, stateful=True)
+        header = SJSON.read_header(sender.to_binary({"a": 1}))
+        assert not header.sender_present
+        assert not header.flags & SJSON.FLAG_SENDER
+        assert header.sender_id == 0  # attributed to the default
+
+    def test_stateless_keeps_sender_id(self) -> None:
+        header = SJSON.read_header(SJSON(sender_id=7).to_binary({"a": 1}))
+        assert header.sender_present and header.sender_id == 7
+
+    def test_omitting_saves_two_bytes(self) -> None:
+        doc = {"name": "x", "value": 1}
+        with_id = SJSON(sender_id=7, include_sender_id=True).to_binary(doc)
+        without = SJSON(sender_id=7, include_sender_id=False).to_binary(doc)
+        assert len(with_id) - len(without) == 16
+
+    def test_receiver_attributes_to_connection(self) -> None:
+        """One receiver, two links: each link's packets get the link's id."""
+        a = SJSON(sender_id=1, stateful=True)
+        b = SJSON(sender_id=2, stateful=True)
+        receiver = SJSON(sender_id=99)
+        for doc in documents(10):
+            assert receiver.to_value(a.to_binary(doc), sender_id=101) == doc
+            assert receiver.to_value(b.to_binary(doc), sender_id=102) == doc
+        assert receiver.last_known_tag(101) == receiver.last_known_tag(102) > 0
+
+    def test_nak_under_link_id(self) -> None:
+        """A sender without an id on the wire answers a NAK for any id."""
+        sender = SJSON(sender_id=7, include_sender_id=False)
+        receiver = SJSON(sender_id=8)
+        packet = sender.to_binary({"alpha": 1})
+        with pytest.raises(KeyError):
+            receiver.to_value(packet, sender_id=55)
+        receiver.load_dictionary(sender.nak_dictionary(55, 0, 0))
+        assert receiver.to_value(packet, sender_id=55) == {"alpha": 1}
+
+    def test_stream_with_sender_id(self) -> None:
+        sender = SJSON(sender_id=7, stateful=True, include_sender_id=True)
+        receiver = SJSON(sender_id=8)
+        for doc in documents(5):
+            packet = sender.to_binary(doc)
+            assert SJSON.read_header(packet).sender_id == 7
+            assert receiver.to_value(packet) == doc

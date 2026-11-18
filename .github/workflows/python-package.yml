@@ -31,8 +31,8 @@ jobs:
         poetry lock
         poetry install --with "dev,test"
     - name: Lint with flake8
-      run: poetry run flake8 src tests --count --show-source --statistics
+      run: poetry run flake8 src tests examples --count --show-source --statistics
     - name: Check formatting with black
-      run: poetry run black --check src tests
+      run: poetry run black --check src tests examples
     - name: Test with pytest
       run: poetry run coverage run -m pytest && poetry run coverage report

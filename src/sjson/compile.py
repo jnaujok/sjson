@@ -17,7 +17,7 @@
 """
 Compile a dictionary ahead of time.
 
-A compiled dictionary is a small JSON file holding the field names and
+A compiled dictionary is a small ``.sdj`` file (JSON inside) holding the field names and
 interned values (in id order) and, when built from a schema, the compiled
 schema itself. Both peers load the file instead of parsing the schema, and
 schema-driven encoding still works.
@@ -28,8 +28,8 @@ often can be interned.
 
 Command line::
 
-    python -m sjson.compile --schema order.schema.json -o order.dict.json
-    python -m sjson.compile --sample traffic.jsonl --intern-min-count 5 -o d.json
+    python -m sjson.compile --schema order.schema.json      # writes order.sdj
+    python -m sjson.compile --sample traffic.jsonl --intern-min-count 5 -o d.sdj
 """
 
 import argparse
@@ -181,6 +181,17 @@ def _read_samples(paths: Sequence[str], each: bool) -> list[Any]:
     return documents
 
 
+def default_output(schema: str) -> str:
+    """``order.schema.json`` or ``order.xsd`` -> ``order.sdj`` (same folder)."""
+    path = Path(schema)
+    name = path.name
+    for suffix in (".schema.json", ".json", ".xsd"):
+        if name.lower().endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    return str(path.with_name(name + TagDictionary.EXTENSION))
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m sjson.compile",
@@ -216,10 +227,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="XSD only: every simple value is a JSON string (plain xmltodict)",
     )
-    parser.add_argument("-o", "--output", required=True, help="output file")
+    parser.add_argument(
+        "-o",
+        "--output",
+        help="output file (default: the schema's name with the .sdj extension)",
+    )
     args = parser.parse_args(argv)
     if args.schema is None and not args.sample:
         parser.error("give --schema, --sample, or both")
+    if args.output is None:
+        if args.schema is None:
+            parser.error("give -o/--output when compiling from samples only")
+        args.output = default_output(args.schema)
 
     options = {}
     if args.schema and args.schema.lower().endswith(".xsd"):

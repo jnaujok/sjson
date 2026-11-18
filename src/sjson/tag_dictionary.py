@@ -43,6 +43,9 @@ class TagDictionary:
     only entries added later have to be sent in response to a NAK.
     """
 
+    #: File extension for compiled dictionaries (SJSON Dictionary).
+    EXTENSION = ".sdj"
+
     def __init__(self, with_values: bool = True) -> None:
         """
         Args:
@@ -225,7 +228,10 @@ class TagDictionary:
         return dictionary
 
     def save(self, path: str | Path) -> None:
-        """Write :meth:`to_dict` to a JSON file."""
+        """
+        Write :meth:`to_dict` to a file. The format is JSON; by convention
+        the file is named ``{name}.sdj`` (:attr:`EXTENSION`).
+        """
         Path(path).write_text(json.dumps(self.to_dict(), indent=1), encoding="utf-8")
 
     @classmethod

@@ -23,6 +23,7 @@ __all__ = [
     "ArrayNode",
     "ObjectNode",
     "SJSON",
+    "StreamGapError",
     "TagDictionary",
     "UnknownSchemaError",
     "load_schema",
@@ -36,5 +37,5 @@ from .null_node import NullNode
 from .array_node import ArrayNode
 from .object_node import ObjectNode
 from .schema import load_schema
-from .sjson import SJSON, UnknownSchemaError
+from .sjson import SJSON, StreamGapError, UnknownSchemaError
 from .tag_dictionary import TagDictionary
