@@ -29,8 +29,10 @@ class TagDictionary:
         Adds a new tag to the dictionary.
 
         Args:
-            tag (str): _description_
-            value (Any): _description_
+            tag (str): The tag to add.
+
+        Returns:
+            int: The tag id, newly assigned or existing.
         """
         with self.lock:
             if tag not in self._tags:
@@ -53,12 +55,12 @@ class TagDictionary:
             ValueError: if the tag is already in the dictionary or the index is
                 already assigned.
         """
-        if tag in self._tags or index in self._lookup:
-            raise ValueError(f"Tag/index collision: {tag}/{index}")
-
         with self.lock:
+            if tag in self._tags or index in self._lookup:
+                raise ValueError(f"Tag/index collision: {tag}/{index}")
             self._tags[tag] = index
             self._lookup[index] = tag
+            self.last_index = max(self.last_index, index)
 
     def get(self, tag: str) -> int:
         """
@@ -149,6 +151,6 @@ class TagDictionary:
         Returns:
             list[tuple[int, str]]: The list of tags
         """
-        return [
+        return sorted(
             (index, tag) for index, tag in self._lookup.items() if index > last_tag_id
-        ]
+        )

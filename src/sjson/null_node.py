@@ -20,6 +20,8 @@ from .node import Node
 from typing import Any
 from bitstring import BitArray
 
+from sjson.bit_reader import BitReader
+
 
 class NullNode(Node):
     """
@@ -27,7 +29,7 @@ class NullNode(Node):
     binary format.
     """
 
-    def __init__(self, bits: BitArray | None = None) -> None:
+    def __init__(self, bits: "BitArray | BitReader | None" = None) -> None:
         """
         Initialize a null node, or a null node from its binary representation.
         """
@@ -60,7 +62,7 @@ class NullNode(Node):
         return BitArray(bin=self.get_binary_code())
 
     def to_value(
-        self, bits: BitArray, tag_dictionary: TagDictionary | None = None
+        self, bits: "BitArray | BitReader", tag_dictionary: TagDictionary | None = None
     ) -> Any:
         """
         Initialize the node from its binary representation.
@@ -69,8 +71,10 @@ class NullNode(Node):
             bits (BitArray): Binary data containing only the '000' type code (no
                            additional data).
         """
-        if bits[0:3].bin == Node.NODE_NULL:
-            del bits[:3]
+        reader, owned = BitReader.begin(bits)
+        if reader.peek_bin(3) == Node.NODE_NULL:
+            reader.read_uint(3)
+            reader.finish(bits, owned)
             return None
         raise ValueError("Invalid null node found - bit pattern mismatch.")
 

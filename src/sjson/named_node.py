@@ -18,6 +18,8 @@ from typing import Any
 
 from bitstring import BitArray
 
+from sjson.bit_reader import BitReader
+
 from sjson.node import Node
 from sjson.nybble_field import NybbleField
 from sjson.tag_dictionary import TagDictionary
@@ -38,7 +40,7 @@ class NamedNode(Node):
         self,
         name: str | None = None,
         node: Node | None = None,
-        bits: BitArray | None = None,
+        bits: "BitArray | BitReader | None" = None,
         tag_dictionary: TagDictionary | None = None,
     ) -> None:
         """Initialize a NamedNode with a name and a node.
@@ -59,7 +61,7 @@ class NamedNode(Node):
             self.name = ""
 
     def to_value(
-        self, bits: BitArray, tag_dictionary: TagDictionary | None = None
+        self, bits: "BitArray | BitReader", tag_dictionary: TagDictionary | None = None
     ) -> Any:
         """
         Convert the binary stream data to a named node.
@@ -73,15 +75,17 @@ class NamedNode(Node):
         """
         if tag_dictionary is None:
             raise ValueError("Missing tag dictionary")
-        if len(bits) < 5:
+        reader, owned = BitReader.begin(bits)
+        if len(reader) < 5:
             raise ValueError("Not enough bits for name and node")
-        tag_id: int = NybbleField.to_value(bits)
+        tag_id: int = NybbleField.to_value(reader)
         if tag_id == 0:
             raise ValueError("Named tag called with a nameless tag.")
         if not tag_dictionary.has_tag_id(tag_id):
             raise KeyError(f"Unknown tag ID: {tag_id}")
         self.name = tag_dictionary.lookup(tag_id)
-        self.node = Node.from_bits(bits, tag_dictionary=tag_dictionary)
+        self.node = Node.from_bits(reader, tag_dictionary=tag_dictionary)
+        reader.finish(bits, owned)
         return (self.name, self.node)
 
     def get_name(self) -> str:

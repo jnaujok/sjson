@@ -14,8 +14,10 @@
 # License along with this library; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 
-import uuid
 import json
+import uuid
+
+import pytest
 
 from bitstring import BitArray
 from sjson.node import Node
@@ -65,10 +67,66 @@ class TestSJson:
         json_length = len(json.dumps(self.json).encode("utf-8"))
         assert val_length == json_length
         assert ba_len < json_length
+        assert val == self.json
+
+    def test_to_value_does_not_modify_input(self) -> None:
+        ba = self.sjson.to_binary(self.json)
+        copy = ba.copy()
+        self.sjson.to_value(ba)
+        assert ba == copy
+
+    def test_byte_padded_packet(self) -> None:
+        """A packet sent as bytes gets zero padding after the CRC."""
+        for document in ({"a": True}, self.json, [1, "two", None]):
+            ba = self.sjson.to_binary(document)
+            padded = BitArray(bytes=ba.tobytes())
+            assert self.sjson.to_value(padded) == document
+
+    def test_crc_mismatch(self) -> None:
+        ba = self.sjson.to_binary(self.json)
+        ba.invert(20)
+        with pytest.raises(ValueError):
+            self.sjson.to_value(ba)
+
+    def test_sender_id_and_length(self) -> None:
+        ba = self.sjson.to_binary(self.json)
+        sender_id, length = SJSON.get_sender_id_and_length(ba)
+        assert sender_id == self.sjson.get_sender_id()
+        assert length + 32 == len(ba)
+
+    def test_incremental_nak(self) -> None:
+        receiver = SJSON()
+        first = self.sjson.to_binary({"alpha": 1})
+        receiver.load_dictionary(
+            self.sjson.nak_dictionary(self.sjson.get_sender_id(), 0)
+        )
+        assert receiver.to_value(first) == {"alpha": 1}
+        known = receiver.get_dictionary(self.sjson.get_sender_id()).last_index
+        second = self.sjson.to_binary({"alpha": 2, "beta": "https://example.com/x"})
+        with pytest.raises(KeyError):
+            receiver.to_value(second)
+        update = self.sjson.nak_dictionary(self.sjson.get_sender_id(), known)
+        receiver.load_dictionary(update)
+        assert receiver.to_value(second) == {
+            "alpha": 2,
+            "beta": "https://example.com/x",
+        }
+
+    def test_long_tag_names(self) -> None:
+        """Tag names (and interned URLs) longer than 255 bytes survive a NAK."""
+        url = "https://example.com/" + "p" * 400
+        ba = self.sjson.to_binary({"link": url})
+        receiver = SJSON()
+        receiver.load_dictionary(
+            self.sjson.nak_dictionary(self.sjson.get_sender_id(), 0)
+        )
+        assert receiver.to_value(ba) == {"link": url}
 
     def test_nak_dict(self) -> None:
         ba = self.sjson.to_binary(self.json)
         dict_ba = self.sjson.nak_dictionary(self.sjson.get_sender_id(), 0)
         assert isinstance(ba, BitArray)
         assert isinstance(dict_ba, BitArray)
-        assert len(dict_ba.tobytes()) == 116
+        receiver = SJSON()
+        receiver.load_dictionary(dict_ba)
+        assert receiver.to_value(ba) == self.json

@@ -21,11 +21,15 @@ from sjson.tag_dictionary import TagDictionary
 from .node import Node
 from bitstring import BitArray
 
+from sjson.bit_reader import BitReader
+
 
 class BooleanNode(Node):
     """Represents a boolean value in SJSON, stored as a single bit in binary format."""
 
-    def __init__(self, value: bool | None = None, bits: BitArray | None = None) -> None:
+    def __init__(
+        self, value: bool | None = None, bits: "BitArray | BitReader | None" = None
+    ) -> None:
         """Initialize a BooleanNode with a boolean value.
 
         Args:
@@ -64,7 +68,7 @@ class BooleanNode(Node):
         return BitArray(bin=self.get_binary_code()) + BitArray([self.value])
 
     def to_value(
-        self, bits: BitArray, tag_dictionary: TagDictionary | None = None
+        self, bits: "BitArray | BitReader", tag_dictionary: TagDictionary | None = None
     ) -> bool:
         """Convert the node to its value representation.
 
@@ -79,12 +83,14 @@ class BooleanNode(Node):
         Returns:
             bool: The value representation of the node.
         """
-        if len(bits) < 4:
+        reader, owned = BitReader.begin(bits)
+        if len(reader) < 4:
             raise ValueError("Not enough bits for boolean value")
-        if bits.bin[0:3] != Node.NODE_BOOLEAN:
+        if reader.peek_bin(3) != Node.NODE_BOOLEAN:
             raise ValueError("Not a boolean value")
-        self.value = bool(int(bits.bin[3:4], 2))
-        del bits[:4]
+        reader.read_uint(3)
+        self.value = reader.read_bool()
+        reader.finish(bits, owned)
         return self.value
 
     def get_value(self) -> Any:
